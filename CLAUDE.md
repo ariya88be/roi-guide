@@ -62,7 +62,11 @@ Plan → confirm with owner → implement a small increment → self-review (bug
 ## Current architecture (update as it grows)
 - `lib/roi/` — pure ROI engine: `statistics`, `amortization`, `defaults`, `cashflow`, `confidence`, `color`, `afterTax`. Barrel: `lib/roi/index.ts`. Fully unit-tested (QA §15 A/B/C).
 - `lib/providers/rentcast/` — **server-only** RentCast client: `client` (retry/backoff, cache-aware, Zod-validated; key from `process.env.RENTCAST_API_KEY`, never logged/in-URL), `schemas`, `errors`, `cache` (in-memory now, Redis later). Unit-tested with injected fetch (QA §15.G). Barrel: `index.ts`.
+- `db/` — Drizzle schema + migrations. `schema/market.ts` (properties, listings, rent_comps, market_snapshots, computed_roi — PostGIS `geometry(Point,4326)` + GiST indexes), `schema/users.ts` (users, saved_searches, alerts — RLS-protected). `client.ts` (server-only pool + `withUser()` RLS scoping). `drizzle.config.ts`. Migration `0000_*.sql` hand-augmented with `CREATE EXTENSION postgis`, SRID 4326, and RLS (enable+FORCE+policies). Static-guarded by `db/migrations.test.ts` (QA §15.H/§15.M). Scripts: `db:generate/migrate/push/studio`.
 - `app/` — Next.js App Router (scaffold only so far).
+
+## RLS contract (do not break)
+User-owned tables (users, saved_searches, alerts) have RLS ENABLED + FORCED; policies match `user_id = current_setting('app.user_id', true)` (NULL when unset ⇒ zero rows, fail-closed). ALWAYS access user data via `withUser(userId, db => ...)` which sets `app.user_id` for the transaction. Cross-user workers (n8n alert checker) must iterate per user setting `app.user_id`, or use a dedicated BYPASSRLS role. Never disable FORCE.
 
 ## Env / provisioning status
 - RentCast: account created, dev API key in `.env.local` (free "API Developer" tier, 50 calls/mo). Verified live (zip 90020: median $1,850 vs mean $2,124 — the skew we defeat).

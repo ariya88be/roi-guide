@@ -100,3 +100,42 @@ noted for hardening.
 **Boundary held:** account creation / password / plan selection were done by the
 owner, not the assistant (per the standing safety rules); the assistant only
 generated the API key and wired it into the gitignored env file.
+
+---
+
+## 2026-07-07 — Data model: Drizzle schema + PostGIS + RLS (Phase 1, increment 3)
+
+**What:** Authored the full schema offline (no DB yet). 8 tables: market-data
+(`properties`, `listings`, `rent_comps`, `market_snapshots`, `computed_roi`)
+and user-owned (`users`, `saved_searches`, `alerts`). PostGIS
+`geometry(Point,4326)` + GiST indexes on `properties.location` and
+`rent_comps.location`. `db/client.ts` exposes a server-only pool and
+`withUser()`. Added drizzle-orm 0.45.2, drizzle-kit 0.31.10, postgres 3.4.9 and
+`db:*` scripts. Generated migration `0000_*.sql`.
+
+**Per-user isolation (§9 / OWASP A01):** every user-owned row has `user_id NOT
+NULL`; migration enables + FORCES Row-Level Security with policies keyed to
+`current_setting('app.user_id', true)` (unset ⇒ zero rows, fail-closed).
+`withUser()` sets that GUC per transaction via a *parameterised* `set_config`.
+Defence in depth: the query layer will also filter by `user_id` explicitly.
+
+**Issues found & fixed:**
+1. drizzle-kit emitted `geometry(point)` — the **SRID 4326 was dropped** from the
+   DDL. Hand-corrected both columns to `geometry(Point,4326)` in the migration.
+2. drizzle-kit does not manage extensions or RLS. Hand-added `CREATE EXTENSION
+   IF NOT EXISTS postgis` (before the first geometry table) and the full RLS
+   block (enable/force/policies) to the migration.
+3. Added `db/migrations.test.ts` static guards so a future `db:generate` that
+   drops the PostGIS/SRID/RLS DDL fails CI loudly.
+
+**esbuild advisory:** installing drizzle-kit pulled a moderate, **dev-only**
+esbuild advisory (via `@esbuild-kit/*`, dev-server CORS — not in our runtime).
+The §15.M gate (no *high*-severity) was already met; cleared it fully anyway with
+an `esbuild ^0.25.0` override. `npm audit` = 0 vulnerabilities; drizzle-kit still
+works.
+
+**Tests:** 67 total green. `tsc` clean.
+
+**Deferred (needs a live DB — do in the Railway session):** actually run the
+migration; real PostGIS viewport/radius query tests (QA §15.H) and a live IDOR/
+RLS cross-tenant test (QA §15.M).
