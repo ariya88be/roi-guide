@@ -166,3 +166,45 @@ one — that directly serves the product's core honesty promise.
 
 **Deferred to Phase 2:** cross-checking sold status against a second source
 (ATTOM) — this screen is status/feed-based only for now.
+
+---
+
+## 2026-07-07 — Railway provisioning + RLS-superuser fix + live tests (Phase 1, increment 5)
+
+**What:** Provisioned the database and cache on the owner's existing Railway
+account (new project `romantic-tenderness`). Postgres + Redis online; migration
+applied; schema verified live.
+
+**Issue 1 — no PostGIS in Railway's default image.** `ls .../extension/` showed
+`NO_POSTGIS_FILES`. Swapped the Postgres service image to `postgis/postgis:18-3.6`
+(verified that tag exists via Docker Hub API first — `18-3.5` does NOT exist for
+PG18). It started cleanly on the existing volume (no SSL-cert issue); PostGIS 3.6
+(GEOS+PROJ) now available. Verified live: SRID-4326 geometry, both GiST indexes,
+RLS enabled+forced, isolation policies present.
+
+**Issue 2 (the important one) — superusers bypass RLS.** Railway's default
+connection user `postgres` is a SUPERUSER, and PostgreSQL superusers bypass RLS
+*even when FORCED*. Connecting the app as `postgres` would have made all our
+per-user isolation silently decorative — a false-security bug. Fix: created a
+dedicated non-superuser role **`roi_app`** (NOSUPERUSER, NOBYPASSRLS) with
+least-privilege DML grants (`scripts/setup-app-role.mjs`, password from env,
+never committed). Runtime now connects via `APP_DATABASE_URL` (roi_app);
+`DATABASE_URL` (postgres) is reserved for migrations (needs superuser for
+CREATE EXTENSION). `db/client.ts` prefers `APP_DATABASE_URL`.
+
+**Live tests (`db/integration.test.ts`, gated on `APP_DATABASE_URL`):**
+- QA §15.H geospatial: bbox envelope returns exactly the inside points; radius
+  (ST_DWithin over geography) returns the correct nearby set nearest-first; the
+  bbox query plan uses `properties_location_gix` (GiST) under `enable_seqscan=off`.
+- QA §15.M isolation, connected as `roi_app`: a user sees only their own rows;
+  IDOR SELECT and UPDATE of another user's row both return zero; a connection
+  with no `app.user_id` sees zero rows (fail-closed).
+- Suite: 117 green with DB env; 110 pass / 7 skip without it (CI stays offline-safe).
+
+**Secret handling:** connection strings pulled from Railway via the UI copy
+button → OS clipboard → `pbpaste` into gitignored `.env.local`, so passwords
+never appeared in a screenshot or the chat. `.env.example` documents both URLs.
+
+**Billing note:** Railway account is on a TRIAL ("5 days / $0.87 left"). Services
+pause when it lapses; upgrading is the owner's decision (usage-based Hobby ~ $5/mo
++ usage, within the $100 ceiling).

@@ -67,8 +67,10 @@ Plan → confirm with owner → implement a small increment → self-review (bug
 - `app/` — Next.js App Router (scaffold only so far).
 
 ## RLS contract (do not break)
-User-owned tables (users, saved_searches, alerts) have RLS ENABLED + FORCED; policies match `user_id = current_setting('app.user_id', true)` (NULL when unset ⇒ zero rows, fail-closed). ALWAYS access user data via `withUser(userId, db => ...)` which sets `app.user_id` for the transaction. Cross-user workers (n8n alert checker) must iterate per user setting `app.user_id`, or use a dedicated BYPASSRLS role. Never disable FORCE.
+User-owned tables (users, saved_searches, alerts) have RLS ENABLED + FORCED; policies match `user_id = current_setting('app.user_id', true)` (NULL when unset ⇒ zero rows, fail-closed). ALWAYS access user data via `withUser(userId, db => ...)` which sets `app.user_id` for the transaction. **The runtime MUST connect as the non-superuser `roi_app` role (`APP_DATABASE_URL`)** — superusers bypass RLS even when forced, so connecting as `postgres` would silently disable all isolation. Cross-user workers (n8n alert checker) must iterate per user setting `app.user_id`. Never disable FORCE; never point the runtime at the superuser URL. Verified live in `db/integration.test.ts` (QA §15.M).
 
 ## Env / provisioning status
 - RentCast: account created, dev API key in `.env.local` (free "API Developer" tier, 50 calls/mo). Verified live (zip 90020: median $1,850 vs mean $2,124 — the skew we defeat).
-- Not yet provisioned: ATTOM, Postgres/PostGIS (Railway), Redis, Clerk, Sentry.
+- Railway project `romantic-tenderness`: **Postgres 18 + PostGIS 3.6** (image swapped to `postgis/postgis:18-3.6`) and **Redis**, both Online. Migration applied; schema verified live (SRID 4326, GiST, RLS enabled+forced). Connection strings in `.env.local`. ⚠️ Railway account is on a TRIAL — services pause when it lapses unless the owner upgrades (billing = owner's decision).
+- Two DB roles: **`postgres`** (superuser) for MIGRATIONS ONLY (`DATABASE_URL`); **`roi_app`** (non-superuser, NOBYPASSRLS) for the RUNTIME (`APP_DATABASE_URL`) so RLS is actually enforced. Create/rotate `roi_app` with `scripts/setup-app-role.mjs`.
+- Not yet provisioned: ATTOM, Clerk, Sentry.

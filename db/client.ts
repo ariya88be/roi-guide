@@ -21,9 +21,14 @@ export type Database = PostgresJsDatabase<typeof schema>;
 let singleton: { db: Database; sqlClient: postgres.Sql } | undefined;
 
 function connect(): { db: Database; sqlClient: postgres.Sql } {
-  const url = process.env.DATABASE_URL;
+  // The RUNTIME must connect as the non-superuser `roi_app` role
+  // (APP_DATABASE_URL) so Row-Level Security is enforced — superusers bypass RLS.
+  // DATABASE_URL (the postgres superuser) is reserved for migrations only.
+  const url = process.env.APP_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!url) {
-    throw new Error("DATABASE_URL is not set (server-side env). Cannot open a database connection.");
+    throw new Error(
+      "Neither APP_DATABASE_URL nor DATABASE_URL is set (server-side env). Cannot open a database connection.",
+    );
   }
   const sqlClient = postgres(url, { max: 10 });
   const db = drizzle(sqlClient, { schema });
