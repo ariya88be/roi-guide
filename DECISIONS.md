@@ -71,3 +71,32 @@ reports **0 vulnerabilities**. Did not run the forced downgrade.
 **Why engine-first:** it is the honest core and the thing most likely to be
 subtly wrong. Building and testing it in isolation (no I/O) before any UI/API
 means every downstream consumer inherits verified maths.
+
+---
+
+## 2026-07-07 — RentCast provisioning + server-only client (Phase 1, increment 2)
+
+**What:** Created a RentCast account (via Chrome, owner did account creation +
+plan choice; assistant generated the API key), stored the dev key in
+`.env.local` (gitignored). Verified it live against zip 90020: **median rent
+$1,850 vs average $2,124**, min $809 / max $9,998 — a real, first-call
+demonstration of the mean-vs-median skew the product exists to defeat.
+
+Built `lib/providers/rentcast/` (server-only): Zod schemas for market / sale
+listings / rent AVM; a client with X-Api-Key auth (never logged, never in URL or
+cache key), exponential-backoff+jitter retry on 429/5xx/network errors
+(honours Retry-After), fail-fast on non-retryable 4xx, response validation, and
+a pluggable cache (in-memory now; Redis when provisioned). All time/random/fetch
+injectable → deterministic tests. Added Zod 4.4.3.
+
+**Tests:** 60 total green (11 new for the client, covering QA §15.G). `tsc` clean,
+`npm audit` clean.
+
+**Deferred:** a live integration test that runs only when `RENTCAST_API_KEY` is
+present (to avoid burning the 50-call free quota in CI) — add when ingestion
+lands. Malformed-JSON-on-200 currently surfaces a raw SyntaxError; low priority,
+noted for hardening.
+
+**Boundary held:** account creation / password / plan selection were done by the
+owner, not the assistant (per the standing safety rules); the assistant only
+generated the API key and wired it into the gitignored env file.

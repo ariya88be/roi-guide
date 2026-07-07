@@ -61,4 +61,9 @@ Plan → confirm with owner → implement a small increment → self-review (bug
 
 ## Current architecture (update as it grows)
 - `lib/roi/` — pure ROI engine: `statistics`, `amortization`, `defaults`, `cashflow`, `confidence`, `color`, `afterTax`. Barrel: `lib/roi/index.ts`. Fully unit-tested (QA §15 A/B/C).
+- `lib/providers/rentcast/` — **server-only** RentCast client: `client` (retry/backoff, cache-aware, Zod-validated; key from `process.env.RENTCAST_API_KEY`, never logged/in-URL), `schemas`, `errors`, `cache` (in-memory now, Redis later). Unit-tested with injected fetch (QA §15.G). Barrel: `index.ts`.
 - `app/` — Next.js App Router (scaffold only so far).
+
+## Env / provisioning status
+- RentCast: account created, dev API key in `.env.local` (free "API Developer" tier, 50 calls/mo). Verified live (zip 90020: median $1,850 vs mean $2,124 — the skew we defeat).
+- Not yet provisioned: ATTOM, Postgres/PostGIS (Railway), Redis, Clerk, Sentry.
