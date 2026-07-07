@@ -87,7 +87,8 @@ export const listings = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    index("listings_property_idx").on(t.propertyId),
+    // One current listing per property per source — the idempotent-upsert key.
+    uniqueIndex("listings_property_source_key").on(t.propertyId, t.source),
     index("listings_status_idx").on(t.status),
     index("listings_active_idx").on(t.isActive),
   ],

@@ -208,3 +208,39 @@ never appeared in a screenshot or the chat. `.env.example` documents both URLs.
 **Billing note:** Railway account is on a TRIAL ("5 days / $0.87 left"). Services
 pause when it lapses; upgrading is the owner's decision (usage-based Hobby ~ $5/mo
 + usage, within the $100 ceiling).
+
+---
+
+## 2026-07-07 — Ingestion pipeline + first live data (Phase 1, increment 6)
+
+**What:** `lib/ingest/` — RentCast → hygiene screen → ROI compute → idempotent
+persist. Pure mappers/compute (unit-tested); `persist` upserts properties/
+listings/computed_roi/market_snapshots with explicit `ST_SetSRID(...,4326)`
+geometry; `ingestZip` orchestrates with injectable client + db.
+
+**Schema:** added a unique index on `listings(property_id, source)` as the
+idempotent-upsert key (migration 0001, applied live).
+
+**Phase-1 rent basis decision:** use the ZIP **bedroom-matched median** from one
+RentCast market call per ZIP, instead of a per-property AVM call each — stays in
+the 50-call free-tier budget. Confidence is therefore coarse and never "High"
+(honest about being ZIP-level); property-level median-of-comps + real confidence
+is Phase 2.
+
+**`computed_roi.color_band` semantics:** it stores the target-INDEPENDENT cash-
+flow SIGN (positive/negative/breakeven). The map's gradient colour is target-
+RELATIVE and computed at render by `lib/roi/color.colorForCashFlow(cf, target)` —
+a precomputed band can't exist before the user picks a target. (Column keeps its
+name to avoid a rename migration; documented here + in code.)
+
+**Tests:** pure mapper/compute unit tests + a live integration test (mock client,
+real DB) proving screening drops Sold/Land and re-runs are idempotent (no dup
+rows) — QA §15.G. Suite: 132 with DB env, 122 pass / 11 skip offline.
+
+**First live run (owner switched target market to San Bernardino):** ingested ZIP
+92404 — 21 real properties. Market median $1,640 vs mean $1,831 (the skew we
+defeat). At conservative default financing (20% down, 7%, 30yr, full reserves)
+ALL pins are cash-flow negative (best: $160k 1bd condo at −$203/mo). This is the
+product working as intended — naive tools would call several "profitable"; the
+all-cash / down-payment sliders will reveal which flip positive. Koreatown (90020)
+test data was removed so San Bernardino is the clean starting market.
