@@ -62,6 +62,7 @@ Plan → confirm with owner → implement a small increment → self-review (bug
 ## Current architecture (update as it grows)
 - `lib/roi/` — pure ROI engine: `statistics`, `amortization`, `defaults`, `cashflow`, `confidence`, `color`, `afterTax`. Barrel: `lib/roi/index.ts`. Fully unit-tested (QA §15 A/B/C).
 - `lib/providers/rentcast/` — **server-only** RentCast client: `client` (retry/backoff, cache-aware, Zod-validated; key from `process.env.RENTCAST_API_KEY`, never logged/in-URL), `schemas`, `errors`, `cache` (in-memory now, Redis later). Unit-tested with injected fetch (QA §15.G). Barrel: `index.ts`.
+- `lib/hygiene/` — pure listing-hygiene screen (§6.C/§4.Q7): `tokens` (normalisation + allow/deny vocab), `screen` (`screenListing`/`screenListings` → render decision + coded reasons). Conservative allowlist, fail-closed, clock injected. Unit-tested (QA §15.D). Barrel: `index.ts`.
 - `db/` — Drizzle schema + migrations. `schema/market.ts` (properties, listings, rent_comps, market_snapshots, computed_roi — PostGIS `geometry(Point,4326)` + GiST indexes), `schema/users.ts` (users, saved_searches, alerts — RLS-protected). `client.ts` (server-only pool + `withUser()` RLS scoping). `drizzle.config.ts`. Migration `0000_*.sql` hand-augmented with `CREATE EXTENSION postgis`, SRID 4326, and RLS (enable+FORCE+policies). Static-guarded by `db/migrations.test.ts` (QA §15.H/§15.M). Scripts: `db:generate/migrate/push/studio`.
 - `app/` — Next.js App Router (scaffold only so far).
 

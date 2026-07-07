@@ -139,3 +139,30 @@ works.
 **Deferred (needs a live DB — do in the Railway session):** actually run the
 migration; real PostGIS viewport/radius query tests (QA §15.H) and a live IDOR/
 RLS cross-tenant test (QA §15.M).
+
+---
+
+## 2026-07-07 — Listing-hygiene / exclusion engine (Phase 1, increment 4)
+
+**What:** `lib/hygiene/` — the pure "false-impression-proof" screen. Normalises
+provider status/type strings to bare tokens, then applies conservative rules:
+- status must be Active (any non-Active, known or unknown, is excluded);
+- excluded listing types: foreclosure, pre-foreclosure, auction, REO, bank-owned,
+  short-sale, new-construction;
+- property-type ALLOWLIST (single-family, condo, townhome, 2–4 unit multifamily);
+  raw land called out specifically; 5+ unit multifamily excluded via record or
+  type-implied unit count;
+- 55+ senior-restricted excluded;
+- freshness: inactive flag, missed-sync count ≥ N, or stale lastSeen all exclude.
+
+Returns a render decision plus **coded, surfaceable reasons** (never a silent
+drop), and a batch partition helper. Clock injected → deterministic.
+
+**Design choice:** allowlist + fail-closed (unknown status/type ⇒ exclude). We
+would rather hide a borderline-valid listing than show a distressed/stale/wrong
+one — that directly serves the product's core honesty promise.
+
+**Tests:** QA §15.D covered; suite now 110 green. `tsc` + `npm audit` clean.
+
+**Deferred to Phase 2:** cross-checking sold status against a second source
+(ATTOM) — this screen is status/feed-based only for now.
