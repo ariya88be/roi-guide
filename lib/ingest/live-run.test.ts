@@ -36,7 +36,6 @@ live("LIVE ingest (real RentCast + DB)", () => {
           snapshotDate: new Date().toISOString().slice(0, 10),
           limit: 25,
         });
-        // eslint-disable-next-line no-console
         console.log("LIVE INGEST SUMMARY:", JSON.stringify(summary));
         expect(summary.fetched).toBeGreaterThanOrEqual(0);
       } finally {

@@ -53,7 +53,7 @@ export class NoopCache implements ProviderCache {
   async get<T>(): Promise<T | undefined> {
     return undefined;
   }
-  async set<T>(): Promise<void> {
+  async set(): Promise<void> {
     /* intentionally empty */
   }
 }

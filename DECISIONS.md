@@ -244,3 +244,43 @@ ALL pins are cash-flow negative (best: $160k 1bd condo at −$203/mo). This is t
 product working as intended — naive tools would call several "profitable"; the
 all-cash / down-payment sliders will reveal which flip positive. Koreatown (90020)
 test data was removed so San Bernardino is the clean starting market.
+
+---
+
+## 2026-07-07 — Viewport-pins API + MapLibre map (Phase 1, increment 7)
+
+**What:** The map — finally something to see. `/api/pins` (GeoJSON, GiST bbox
+query, target/budget filter, per-pin gradient colour) and `/api/property/[id]`
+(full itemised breakdown), both rate-limited (Redis/ioredis) and Zod-validated,
+generic error responses. `MapView` renders MapLibre pins over San Bernardino with
+$-labels, filter controls, legend, and a click→detail card that shows every
+expense line ("never a bare number").
+
+**Read the Next 16 docs first (per AGENTS.md).** Captured the breaking changes in
+CLAUDE.md: async `params`/`searchParams`/`cookies`/`headers`; `ssr:false` needs a
+client page; `next lint` removed. Would have silently bitten otherwise.
+
+**Design decision — recompute cash flow per request from the user's assumptions**
+(not just the precomputed financed default). At 7% financing EVERY San Bernardino
+property is cash-flow negative, so a positive target on the financed default is an
+empty map. Recomputing per-listing with the pure engine makes the sliders +
+all-cash toggle work live. `computed_roi` stays as the persisted default snapshot.
+
+**The demo is the thesis, working:** all-cash → 17 green pins (best +$1,470/mo at
+7115 Newbury Ave); financed → 0 pins with an honest empty-state hint.
+
+**Bugs found & fixed during live browser verification (Chrome DevTools):**
+1. Black map in screenshots — MapLibre paints on rAF (throttled in the automated
+   tab); confirmed 17 pins actually rendered via `queryRenderedFeatures`.
+2. Map container collapsed to 0 height — MapLibre forces `position:relative`,
+   defeating Tailwind `absolute inset-0`; fixed with `h-full w-full`.
+3. `preserveDrawingBuffer` moved under `canvasContextAttributes` in MapLibre v5.
+4. `react-hooks/refs` lint — was reading/writing a ref during render; moved the
+   filters-ref sync into a `useEffect`.
+
+**Verification:** typecheck + eslint clean; `npm audit` 0; 132 tests (+pins-param
+validation) / 11 skip offline. Live-verified: pins, gradient, $-labels, filters
+(17⇄0), detail card, empty state.
+
+**Deferred:** clustering (QA §15.I, when we add ZIPs); MapTiler/Protomaps vector
+basemap (keyless OSM raster now); mobile bottom-sheet; Clerk auth.
