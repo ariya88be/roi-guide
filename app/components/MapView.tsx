@@ -594,8 +594,14 @@ export default function MapView() {
     if (process.env.NODE_ENV !== "production") {
       (window as unknown as { __roiMap?: maplibregl.Map }).__roiMap = map;
     }
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    // MapLibre PREPENDS new controls added to a bottom-* corner (the most
+    // recently added one ends up closest to the TOP of that corner's stack,
+    // not the bottom) — confirmed by inspecting the live DOM order, which is
+    // the opposite of what a naive "added after = appears after" reading of
+    // addControl would suggest. So CreditControl must be added FIRST for it
+    // to land BELOW the zoom buttons, not above them.
     map.addControl(new CreditControl(), "bottom-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
     map.on("load", () => {
       // A teardrop map-pin as an SDF image so a single shape can be tinted
