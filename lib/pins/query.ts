@@ -23,6 +23,21 @@ import { scoreDeals } from "@/lib/roi/deal";
 import { computeMonthlyCashFlow } from "@/lib/roi/cashflow";
 import { roughAfterTaxMonthlyCashFlow } from "@/lib/roi/afterTax";
 import { CONSERVATIVE_DEFAULTS } from "@/lib/roi/defaults";
+import { normalizeToken } from "@/lib/hygiene";
+
+/**
+ * "House only" toggle: single-family + 2-4 unit multifamily ONLY — excludes
+ * condo/townhome/apartment/manufactured/mobile homes, deliberately narrower
+ * than the general hygiene allowlist (which also admits condos/townhomes).
+ */
+const HOUSE_ONLY_TYPE_TOKENS = new Set([
+  "singlefamily",
+  "multifamily",
+  "duplex",
+  "triplex",
+  "fourplex",
+  "quadruplex",
+]);
 
 export interface BBox {
   minLng: number;
@@ -52,6 +67,8 @@ export interface PinsQuery {
   expenseAssumptions: ExpenseAssumptions;
   gradient?: GradientConfig;
   limit?: number;
+  /** Restrict to single-family + 2-4 unit multifamily with no known HOA fee. */
+  houseOnly?: boolean;
 }
 
 export interface PinFeature {
@@ -109,6 +126,11 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   for (const r of rows) {
     const price = n(r.price);
     if (!(price > 0)) continue;
+    if (q.houseOnly) {
+      const typeToken = normalizeToken(String(r.property_type ?? ""));
+      const knownHoa = r.hoa_fee != null && n(r.hoa_fee) > 0;
+      if (!HOUSE_ONLY_TYPE_TOKENS.has(typeToken) || knownHoa) continue;
+    }
     const monthlyRent = n(r.median_rent);
     const cf = computeMonthlyCashFlow({
       price,
@@ -162,8 +184,13 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
     });
   }
 
-  // Best DEALS first (not just biggest cash flow).
+  // Best DEALS first (not just biggest cash flow), then rank 1..N within
+  // whatever is currently in frame — the client re-queries on every pan/zoom/
+  // filter change, so "in frame" always means this response's feature set.
   features.sort((a, b) => (b.properties.dealScore as number) - (a.properties.dealScore as number));
+  features.forEach((f, i) => {
+    f.properties.rank = i + 1;
+  });
   return {
     type: "FeatureCollection",
     features: features.slice(0, q.limit ?? 2000),

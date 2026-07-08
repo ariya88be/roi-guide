@@ -50,6 +50,13 @@ describe("parsePinsParams — boundary validation (brief §9)", () => {
     }
   });
 
+  it("defaults houseOnly to false, and parses an explicit true", () => {
+    const r1 = parsePinsParams(sp({ bbox: validBbox, target: "100" }));
+    expect(r1.success && r1.data.houseOnly).toBe(false);
+    const r2 = parsePinsParams(sp({ bbox: validBbox, target: "100", houseOnly: "true" }));
+    expect(r2.success && r2.data.houseOnly).toBe(true);
+  });
+
   it("clamps limit within [1,5000]", () => {
     expect(parsePinsParams(sp({ bbox: validBbox, target: "100", limit: "99999" })).success).toBe(false);
   });

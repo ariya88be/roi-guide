@@ -47,6 +47,12 @@ export const PinsParamsSchema = z
     vacancyPct: pct.default(D.vacancyPct),
     managementPct: pct.default(D.managementPct),
     maintenancePct: pct.default(D.maintenancePct),
+    // "House only": single-family + 2-4 unit multifamily, no condo/townhome/
+    // apartment/manufactured, and no known HOA fee.
+    houseOnly: z
+      .enum(["true", "false"])
+      .transform((v) => v === "true")
+      .default(false),
   })
   .transform((v) => ({
     bbox: v.bbox,
@@ -54,6 +60,7 @@ export const PinsParamsSchema = z
     budget: v.budget ?? null,
     mode: v.mode ?? (v.budget != null ? ("budget_return" as const) : ("return_only" as const)),
     limit: v.limit,
+    houseOnly: v.houseOnly,
     gradient: {
       palette: v.palette as PaletteName,
       direction: v.direction as PaletteDirection,
@@ -89,6 +96,7 @@ const keys = [
   "vacancyPct",
   "managementPct",
   "maintenancePct",
+  "houseOnly",
 ] as const;
 
 /** Parse from URLSearchParams; returns {success, data|error}. */

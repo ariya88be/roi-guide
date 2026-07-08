@@ -49,6 +49,8 @@ interface Filters {
   vacancyPct: number;
   managementPct: number;
   maintenancePct: number;
+  /** Single-family + 2-4 unit multifamily only; excludes any known HOA fee. */
+  houseOnly: boolean;
 }
 
 const CONSERVATIVE = {
@@ -88,6 +90,7 @@ function assumptionQuery(f: Filters): string {
   p.set("vacancyPct", String(f.vacancyPct));
   p.set("managementPct", String(f.managementPct));
   p.set("maintenancePct", String(f.maintenancePct));
+  p.set("houseOnly", f.houseOnly ? "true" : "false");
   return p.toString();
 }
 
@@ -99,6 +102,49 @@ function zillowUrl(address: string): string {
   return `https://www.zillow.com/homes/${encodeURIComponent(slug)}_rb/`;
 }
 
+/** Escape untrusted text before injecting into a MapLibre popup's innerHTML. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Hover "sneak peek" content. We cannot embed Zillow's actual page (it blocks
+ * iframing and we don't scrape it) — this is our OWN data, styled like a quick
+ * preview card, so a user can gauge a pin before opening the real Zillow tab.
+ */
+function buildPreviewHtml(p: Record<string, unknown>): string {
+  const rank = Number(p.rank);
+  const address = escapeHtml(String(p.address ?? "Unknown address"));
+  const price = Number(p.price);
+  const cashFlow = Number(p.cashFlow);
+  const capRatePct = Number(p.capRatePct);
+  const localCapRatePct = Number(p.localCapRatePct);
+  const relAdvantagePct = Number(p.relAdvantagePct);
+  const color = escapeHtml(String(p.color ?? "#666"));
+  const label = dealLabel(Number(p.dealScore));
+  const relColor = relAdvantagePct >= 0 ? "#15803d" : "#dc2626";
+  return `
+    <div style="min-width:210px;font-family:inherit">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="background:${color};display:flex;height:22px;width:22px;align-items:center;justify-content:center;border-radius:9999px;font-size:11px;font-weight:700;color:#fff">${rank}</span>
+        <span style="font-weight:600;color:#111827;font-size:13px">${money(price)}</span>
+      </div>
+      <div style="margin-top:4px;font-size:12px;color:#374151">${address}</div>
+      <div style="margin-top:4px;display:flex;justify-content:space-between;font-size:12px">
+        <span style="font-weight:600;color:#15803d">${money(cashFlow)}/mo</span>
+        <span style="color:#6b7280">${capRatePct}% cap (area ${localCapRatePct}%)</span>
+      </div>
+      <div style="margin-top:2px;font-size:10px;color:${relColor}">${relAdvantagePct >= 0 ? "+" : ""}${relAdvantagePct}% vs area — ${label.text}</div>
+      <div style="margin-top:4px;font-size:10px;color:#9ca3af">Click to view the listing →</div>
+    </div>
+  `;
+}
+
 // Default to all-cash so this cash-flow-tight market shows pins on first load;
 // the financing toggle reveals the (honest) financed picture.
 const INITIAL_FILTERS: Filters = {
@@ -106,6 +152,7 @@ const INITIAL_FILTERS: Filters = {
   budget: 500_000,
   allCash: true,
   palette: "rdylgn",
+  houseOnly: false,
   ...CONSERVATIVE,
 };
 
@@ -124,6 +171,7 @@ export default function MapView() {
   // Latest filters, readable inside map event handlers without re-registering them.
   const filtersRef = useRef<Filters>(INITIAL_FILTERS);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewPopupRef = useRef<maplibregl.Popup | null>(null);
 
   const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS);
   const [count, setCount] = useState<number | null>(null);
@@ -152,6 +200,9 @@ export default function MapView() {
       const fc = await res.json();
       const src = map.getSource("pins") as maplibregl.GeoJSONSource | undefined;
       if (src) src.setData(fc);
+      // Data just changed under any hovered pin — drop the stale preview rather
+      // than risk it showing a feature that no longer matches the current filters.
+      previewPopupRef.current?.remove();
       setCount(fc.features.length);
       setScanned(fc.scanned ?? null);
     } finally {
@@ -192,18 +243,18 @@ export default function MapView() {
     map.on("load", () => {
       map.addSource("pins", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
 
-      // Heat layer (under the pins): density of good-cash-flow listings. Fades
-      // out as you zoom in so the labelled pins take over.
+      // Heat layer (under the pins): a soft glow so density reads at a glance.
+      // Kept secondary and toggleable — the numbered pins are the primary UI.
       map.addLayer({
         id: "pins-heat",
         type: "heatmap",
         source: "pins",
-        maxzoom: 15,
+        maxzoom: 13,
         paint: {
           "heatmap-weight": ["get", "heatWeight"],
-          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 3],
-          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 10, 22, 14, 42],
-          "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0.85, 15, 0],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 1, 13, 2.2],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 18, 13, 34],
+          "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.55, 11, 0.4, 13, 0],
           "heatmap-color": [
             "interpolate",
             ["linear"],
@@ -222,38 +273,81 @@ export default function MapView() {
         type: "circle",
         source: "pins",
         paint: {
-          // Radius scales with cash flow (heatWeight) as well as zoom, so
-          // magnitude reads before colour does.
+          // Radius scales with deal quality (heatWeight) as well as zoom, with a
+          // floor big enough to hold a 2-digit rank number at any zoom.
           "circle-radius": [
             "*",
-            ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 9, 16, 13],
-            ["+", 0.7, ["*", 0.9, ["get", "heatWeight"]]],
+            ["interpolate", ["linear"], ["zoom"], 8, 8, 12, 11, 16, 15],
+            ["+", 0.85, ["*", 0.5, ["get", "heatWeight"]]],
           ],
           "circle-color": ["get", "color"],
-          "circle-opacity": ["case", ["get", "deEmphasize"], 0.6, 0.92],
+          "circle-opacity": ["case", ["get", "deEmphasize"], 0.65, 0.95],
           "circle-stroke-width": 1.5,
           "circle-stroke-color": "#ffffff",
         },
       });
-      // Dollar label on each pin — colour is never the only signal (§8).
+      // Rank number on every pin — 1 = best deal currently in frame, N = worst.
+      // No minzoom: numbered pins are the primary UI at every zoom level, not
+      // just the heat glow. Colour is never the only signal (§8).
       map.addLayer({
         id: "pins-label",
         type: "symbol",
         source: "pins",
-        minzoom: 12,
         layout: {
-          "text-field": ["concat", "$", ["to-string", ["get", "cashFlow"]]],
-          "text-size": 11,
-          "text-offset": [0, 1.3],
-          "text-font": ["Open Sans Regular"],
+          "text-field": ["to-string", ["get", "rank"]],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 16, 13],
+          "text-font": ["Open Sans Bold"],
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
         },
-        paint: { "text-color": "#111827", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+        paint: { "text-color": "#111827", "text-halo-color": "#ffffff", "text-halo-width": 1.6 },
       });
 
-      map.on("click", "pins-circle", (e) => {
+      // Grey ROI (cap rate) sub-label, once you zoom in a bit — the bold rank
+      // number is the badge on the pin; this is the supporting number below it.
+      map.addLayer({
+        id: "pins-label-roi",
+        type: "symbol",
+        source: "pins",
+        minzoom: 11,
+        layout: {
+          "text-field": ["concat", ["to-string", ["get", "capRatePct"]], "%"],
+          "text-size": 10,
+          "text-offset": [0, 1.5],
+          "text-font": ["Open Sans Regular"],
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: { "text-color": "#6b7280", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+      });
+
+      const INTERACTIVE_LAYERS = ["pins-circle", "pins-label", "pins-label-roi"];
+
+      // Hover: a quick "sneak peek" preview built from OUR OWN data (not an
+      // embed of Zillow — it blocks iframing, and we don't scrape it).
+      const previewPopup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        offset: 14,
+        maxWidth: "240px",
+      });
+      previewPopupRef.current = previewPopup;
+      const showPreview = (e: maplibregl.MapLayerMouseEvent) => {
+        const f = e.features?.[0];
+        if (!f || !f.properties || f.geometry.type !== "Point") return;
+        previewPopup.setLngLat(f.geometry.coordinates as [number, number]).setHTML(buildPreviewHtml(f.properties)).addTo(map);
+      };
+      const hidePreview = () => previewPopup.remove();
+
+      // Clicking a pin opens its listing directly (Zillow), and also updates the
+      // side detail card with the full cash-flow / deal-quality breakdown.
+      const openListing = (e: maplibregl.MapLayerMouseEvent) => {
         const p = e.features?.[0]?.properties;
         const id = p?.id as string | undefined;
         if (!id) return;
+        previewPopup.remove();
+        const address = p?.address as string | undefined;
+        if (address) window.open(zillowUrl(address), "_blank", "noopener,noreferrer");
         const bool = (v: unknown) => v === true || v === "true";
         openDetail(id, {
           capRatePct: Number(p!.capRatePct),
@@ -263,9 +357,20 @@ export default function MapView() {
           cluster: bool(p!.cluster),
           belowMarket: bool(p!.belowMarket),
         });
-      });
-      map.on("mouseenter", "pins-circle", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "pins-circle", () => (map.getCanvas().style.cursor = ""));
+      };
+
+      for (const layer of INTERACTIVE_LAYERS) {
+        map.on("click", layer, openListing);
+        map.on("mouseenter", layer, (e) => {
+          map.getCanvas().style.cursor = "pointer";
+          showPreview(e);
+        });
+        map.on("mousemove", layer, showPreview);
+        map.on("mouseleave", layer, () => {
+          map.getCanvas().style.cursor = "";
+          hidePreview();
+        });
+      }
 
       fetchPins();
     });
@@ -383,6 +488,16 @@ export default function MapView() {
         <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
           <input
             type="checkbox"
+            checked={filters.houseOnly}
+            onChange={(e) => setFilters((f) => ({ ...f, houseOnly: e.target.checked }))}
+          />
+          House only
+          <span className="text-gray-400">(no condo/apt/manufactured, no HOA)</span>
+        </label>
+
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
+          <input
+            type="checkbox"
             checked={showHeat}
             onChange={(e) => setShowHeat(e.target.checked)}
           />
@@ -481,8 +596,9 @@ export default function MapView() {
             <span>Local bargain</span>
           </div>
           <p className="mt-1 text-[10px] leading-tight text-gray-400">
-            Green = high return for the price <em>and</em> a bargain vs nearby homes. Every pin already clears your
-            target; the $ label is its monthly cash flow.
+            Green = high return for the price <em>and</em> a bargain vs nearby homes. Pins are numbered 1 (best) to N
+            (worst) among what&apos;s on screen — it re-ranks as you pan or zoom. Hover a pin for a quick peek; click
+            to open its listing.
           </p>
         </div>
       </div>
