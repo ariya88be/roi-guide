@@ -457,3 +457,201 @@ surfaces the cluster/belowMarket warnings for anyone who clicks in.
 **Tests:** deal.ts +6 (relAdvantage sign regression x3, same-building cluster
 regression x2), sizeSanity.ts (new file) +9, pinsParams.ts +2 (mode-derivation,
 bbox-span). 168 pass / 3 skip with DB access; typecheck+lint clean throughout.
+
+---
+
+## 2026-07-07 — Rank-prefix cleanup, native pin clustering, per-property hide
+
+**What:** Three UI requests, plus one real bug found and fixed along the way.
+
+1. **Removed the "Rank N:" text prefix** from each Properties-list row — the
+   rank is already shown in the colour-coded numbered bubble to its left, so
+   the text was redundant. The row now leads with the address; the rank
+   context moves into the button's `aria-label` so screen-reader users don't
+   lose it (list still doubles as the §15.K map alternative).
+
+2. **Native MapLibre clustering on the "pins" source** (`cluster: true`,
+   `clusterMaxZoom: 14`, `clusterRadius: 60`) — at low zoom, dense areas were
+   rendering as numbered pins stacked directly on top of each other with no
+   way to tell them apart. Clusters now render as a bubble sized by point
+   count and coloured by the cluster's AVERAGE deal score (`sum_score /
+   point_count`, aggregated via `clusterProperties`, same red→green ramp as
+   individual pins) — clicking one zooms in just enough to break it apart
+   (`getClusterExpansionZoom` + `easeTo`). The existing `pins-circle` /
+   `pins-label` / `pins-label-roi` layers got `filter: ["!", ["has",
+   "point_count"]]` so they only draw unclustered individual points; the heat
+   layer's `heatmap-weight` falls back to an aggregated `sum_heat` for cluster
+   points so the glow doesn't blank out at low zoom.
+
+3. **Per-property hide/show (eye icon)** in the Properties list — an eye
+   icon on each row calls `toggleHidden(id)`. Hidden properties are removed
+   from the MAP entirely (not shown, don't count toward clusters — that's the
+   actual decluttering value), but stay in place in the LIST at their
+   original position: the row shows a grey, blank (no-number) bubble and
+   "Hidden" text instead of disappearing or moving to a separate section, and
+   every row after it compresses its rank number upward by one to fill the
+   gap — e.g. hiding rank 2 turns rank 3 into rank 2. This was a deliberate
+   correction mid-implementation: the first pass moved hidden rows to a
+   separate "Hidden" section at the bottom, which the owner explicitly did not
+   want — the row's LIST POSITION should stay fixed, only its bubble/number
+   should go blank.
+
+**Bug found and fixed while wiring clustering (pre-dates this session's
+changes):** `pins-circle`'s `circle-radius` expression nested a zoom-based
+`interpolate` inside a `*` multiplication —
+`["*", ["interpolate", ["linear"], ["zoom"], ...], heatWeightMultiplier]`.
+MapLibre's style spec forbids a `zoom` expression from appearing anywhere
+except as the direct input to a TOP-LEVEL `interpolate`/`step` — nesting it
+inside `*` throws `"zoom" expression may only be used as input to a top-level
+"step" or "interpolate" expression` at `addLayer` time. Because this threw
+synchronously inside the map's `"load"` handler, EVERY line after it in that
+handler silently never ran — including the initial `fetchPins()` call — so
+every individual (unclustered) pin has been rendering as a bare floating
+number with no coloured circle behind it, and the map never auto-loaded
+listings on first paint, this whole project, undetected until now. Fixed by
+switching to MapLibre's documented "zoom-and-property" composite pattern: a
+nested `interpolate` (on `heatWeight`) inside each zoom stop's output, e.g.
+`5, ["interpolate", ["linear"], ["get","heatWeight"], 0, 6.8, 1, 10.8]` — zoom
+stays the sole top-level input, and the per-stop nested interpolate provides
+the deal-quality-driven size variation. Live-verified: individual pins now
+render as coloured circles, clusters render as bubbles, `Properties (N)` /
+"N of M listings" reflect a real completed fetch, and clicking a cluster
+correctly calls `getClusterExpansionZoom` and zooms in.
+
+**Tests:** typecheck + lint clean; 158 pass / 13 skip offline, 168 pass / 3
+skip with DB access — no regressions. Live-verified in the browser: rank
+prefix removed, clusters colour/count correctly, cluster click zooms in and
+breaks the cluster apart, hide/show toggles the map pin and compresses/
+restores list rank numbers correctly.
+
+---
+
+## 2026-07-08 — Turnkey-rental thesis: fractional exclusion, quality-aware ranking, full validation audit, new map UI
+
+Owner sharpened the mission: **surface only turnkey homes you can buy and rent
+out immediately** — exclude fractional/co-ownership, raw land/unbuilt, and
+distressed/"breaking down" homes; never reward a home that is cheap *because*
+it is broken or fractional. Then asked to "validate everything from the start."
+
+**The Malibu price bug → fractional ownership.** Owner flagged 20460 Pacific
+Coast Hwy, Malibu showing ~$674k when it's "actually a lot more." Root cause:
+it's a **Pacaso** listing — the price buys a **1/8 ownership share**, not the
+whole home, so our engine underwrote a fractional price as a fee-simple sale
+(Unit 2 showed a bogus +$1,015/mo). RentCast exposes `listingOffice`/
+`listingAgent` (name/email/website); "Pacaso Inc." / mls@pacaso.com is
+unambiguous. Fix: new hygiene exclusion `checkFractionalOwnership` (brand
+tokens `pacaso`, `kocomo`, matched across all six office/agent name/website/
+email fields; substring-safe brands only — `ember` deliberately omitted, it's
+inside "September"). Live-deactivated the 2 in-DB offenders (is_active=false;
+14 legit Malibu listings still render). Land was already excluded (0 land rows
+in DB). **Distress is undetectable from structured data** — RentCast returns
+`listing_type="Standard"` for everything, no condition/remarks field — so the
+best available proxy is the implausible-rent/size gate + the belowMarket verify
+flag; ATTOM/MLS remarks noted as the real condition source (follow-up).
+
+**Full validation workflow** (5-dimension audit — data quality, ROI engine,
+hygiene/pipeline, frontend/API, thesis alignment — each finding adversarially
+verified by an independent refuter): 25 confirmed defects (2 critical, 7 high,
+12 medium, 4 low), 5 false alarms rejected (incl. re-confirming the
+circle-radius fix is genuine and the popup path is XSS-safe). Fixes landed:
+
+1. **[CRITICAL] Quality-aware ranking.** Ranking sorted purely by cap-rate
+   `dealScore`; `confidence`/`de_emphasize`/`belowMarket` were display-only, so
+   cheap-because-broken/mis-priced homes surfaced at the top (de-emphasised pins
+   only dimmed to 0.65 opacity while keeping rank #1). Fix: `lib/pins/query.ts`
+   now multiplies the score that drives colour+heat+rank+label by a
+   `qualityFactor` (×0.5 de-emphasise, ×0.75 Low confidence). Live-verified: top
+   12 in a busy viewport are all clean turnkey homes; first de-emphasised pin
+   sinks to rank 22.
+2. **[HIGH] Multi-Family priced whole but rented as one door.** 453 MF rows had
+   a single-unit ZIP median rent vs the whole-building price → wildly wrong
+   (often −$40k/mo) ROI. `compute.ts` now forces Low+de-emphasise for
+   multi-unit types (they can't be priced per-door in Phase 1); 376 active rows
+   backfilled. They sink via the ranking fix; a per-door rent basis is the
+   real fix (follow-up).
+3. **[HIGH] Implausible rent/size.** A 440 sqft studio was handed the ZIP's
+   $6,000 overall median (~$13.6/sqft vs a ~$3.5 norm). New
+   `isImplausibleRentForSize` (uses the market snapshot's median rent-per-sqft)
+   forces Low+de-emphasise; also a `implausibleCapRate` (18%) ceiling caps the
+   absolute-efficiency score so an out-of-distribution cap rate can't reach
+   ≈1. 2 active rows backfilled.
+4. **[HIGH] averageRent silently stored as "medianRent"** when a bedroom
+   segment lacked a median (`mapRentcast.ts`) — dropped; median-only, else fall
+   through to the ZIP median. **Non-bedroom-matched fallback** (~52% of rows)
+   now caps confidence at Low.
+5. **[CRITICAL] Stale rows never deactivated.** Re-ingest skipped hygiene
+   failures with `continue`, so a row ingested before a new exclusion existed
+   kept `is_active=true` forever. New `deactivateListingByRentcastId` runs on
+   any fetched-but-now-failing listing (the durable fractional fix; full
+   not-seen feed reconciliation noted as follow-up).
+6. **Correctness cluster:** fetch in-flight guard (out-of-order responses can't
+   clobber newer pins); `/api/property/[id]` uses `safeParse` → 400 not 500 on
+   a bad slider value; the "N of M clear your target" denominator now uses an
+   honest `eligible` count (post price>0 + houseOnly) not the raw scan; and
+   `percentileRank` uses the midrank convention so an all-tied market scores
+   the neutral 0.5, not 0.
+
+**Deliberate NON-fix:** `belowMarket` is kept a VERIFY flag, not a score
+penalty. Penalising cheapness contradicts the owner's earlier explicit design
+(a $400k home matching a $700k home's return should read *greener* — capital
+efficiency is the edge we reward). The genuinely-broken cheap cases are
+demoted precisely where detected (multi-family / micro-unit / implausible rent
+→ Low+de-emphasise → ranking penalty), so cheapness itself needn't be punished.
+
+**Default view:** opens on the **Hollywood Hills at zoom 9** (wide LA-metro
+overview); stale "Inland Empire" copy corrected to the true coverage
+(coast → city → San Fernando Valley → Inland Empire).
+
+**New map UI (owner request):**
+- **Cluster toggle** ("Group into graded clusters", on by default) via
+  `GeoJSONSource.setClusterOptions({cluster})` — off shows every property as
+  its own pin (preserves the `clusterProperties` set at creation).
+- **Clusters graded, not counted.** First shipped as absolute A–F bands (a
+  `step` on avg deal score); the owner then asked for an **ordinal A+…Z-**
+  ranking — 26 letters × {+,·,−} = 78 unique grades, the best cluster in view is
+  A+, the next A, then A-, … one grade each, with Z- the only grade allowed to
+  repeat (surplus past 78 clusters). An ordinal rank can't be expressed in a
+  MapLibre expression, and feature-state can't drive a layout `text-field`, so
+  grades are rendered as lightweight HTML markers over the bubbles: on every
+  `idle` the clusters in view are queried (`querySourceFeatures`, deduped by
+  `cluster_id`), ranked by avg deal score, and labelled by index; markers clear
+  on `zoomstart` (clusters merge/split) and the bubble COLOUR still shows
+  absolute quality. `pointer-events:none` so a click still falls through to the
+  GL cluster layer's zoom-in.
+- **Teardrop map-pins**: an SDF teardrop (`makePinImage` → `addImage(sdf:true)`)
+  tinted per-feature by the deal-quality colour (`icon-color`), rank number in
+  the head, tip on the coordinate — replaces the plain circle. Same red→green
+  ranking colour as the list bubbles. Hover/click hit-testing re-wired to the
+  new `pins-symbol` layer and live-verified (sneak-peek popup + detail).
+
+**Tests:** typecheck + lint clean; 176 pass / 13 skip offline, 186 pass / 3
+skip with DB access (+18 new: fractional field coverage, multi-family /
+implausible-rent / bedroom-fallback confidence, rent-per-sqft gate, cap-rate
+ceiling, midrank). All map UI live-verified in the browser (graded clusters,
+cluster toggle, coloured teardrops with rank numbers, hover preview).
+
+**Note — dev-only gotcha:** heavy successive edits to `MapView.tsx` put
+Turbopack's HMR into a stale/torn-down state twice (the map's `load` handler
+appeared to fail with the *old* circle-radius error, or the map lost its
+style). Both times a clean `rm -rf .next` + dev-server restart fixed it — it
+was never a code defect (the served bundle was stale). Worth a hard restart
+before trusting a "broken map" during a long editing session.
+
+**Post-review round** (a second adversarial workflow reviewed the whole diff;
+it rejected 4 "findings" as the intentional decisions above and confirmed 4
+real ones, all fixed):
+- **[MED] rent/sqft gate was inert on the cached ingest path.**
+  `market_snapshots` didn't store `median_rent_per_square_foot`, so
+  `getCachedOrLiveMarket` handed the gate `null` on every cache HIT (the common
+  `ingestRadius` path) — `isImplausibleRentForSize` silently no-op'd. Added the
+  column (migration `0003_closed_blur.sql`), persisted it in
+  `upsertMarketSnapshot`, and reconstructed it on cache read. The gate now fires
+  on both paths.
+- **[MED] heatmap drew over the cluster bubbles/grades** (added after the
+  cluster layers). `map.moveLayer("pins-heat", "clusters-circle")` drops the
+  glow below the clusters so the grades stay legible at the default zoom.
+- **[LOW] teardrop tip floated ~3px above the coordinate** — `makePinImage`
+  canvas height was `22*scale`; the path's visible span is 20 units, so
+  `20*scale` puts the tip exactly on the bottom edge (and the coordinate).
+- **[LOW] reactivation left a stale `removed_date`** — `upsertListing` now
+  clears it when a listing comes back active.
