@@ -109,6 +109,8 @@ export const DEFAULT_EXCLUDED_MARKETS = new Set(
     "Crestline",
     "Running Springs",
     "Green Valley Lake",
+    "Cedarpines Park",
+    "Arrowbear Lake",
     "Fawnskin",
     "Angelus Oaks",
     "Sugarloaf",

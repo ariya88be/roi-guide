@@ -19,7 +19,7 @@ import {
   DEFAULT_GRADIENT_CONFIG,
   type GradientConfig,
 } from "@/lib/roi/color";
-import { percentile } from "@/lib/roi/statistics";
+import { scoreDeals } from "@/lib/roi/deal";
 import { computeMonthlyCashFlow } from "@/lib/roi/cashflow";
 import { roughAfterTaxMonthlyCashFlow } from "@/lib/roi/afterTax";
 import { CONSERVATIVE_DEFAULTS } from "@/lib/roi/defaults";
@@ -59,21 +59,11 @@ export interface PinFeature {
   geometry: { type: "Point"; coordinates: [number, number] };
   properties: Record<string, unknown>;
 }
-export interface ColorScale {
-  /** Bottom of the ramp (red): the user's target. */
-  target: number;
-  /** Middle tick, in dollars. */
-  midAnchor: number;
-  /** Top of the ramp (green): dynamic, from the viewport's own distribution. */
-  topAnchor: number;
-}
 export interface PinCollection {
   type: "FeatureCollection";
   features: PinFeature[];
   /** How many active listings the viewport held before the target filter. */
   scanned: number;
-  /** Dollar anchors the client legend labels the gradient with. */
-  colorScale: ColorScale;
 }
 
 type Row = Record<string, unknown>;
@@ -104,17 +94,21 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
 
   const gradient = q.gradient ?? DEFAULT_GRADIENT_CONFIG;
 
-  // Pass 1: recompute cash flow and keep the ones that clear the target.
-  interface Matched {
+  // Pass 1: recompute cash flow for EVERY listing in view, and its cap rate
+  // (financing-independent return on capital). Deal quality is scored against
+  // the whole local market, so we keep all rows here, not just target-clearers.
+  interface Scored {
     r: Row;
     price: number;
     monthlyRent: number;
     cashFlow: number;
+    capRate: number;
     hoaMissing: boolean;
   }
-  const matched: Matched[] = [];
+  const scored: Scored[] = [];
   for (const r of rows) {
     const price = n(r.price);
+    if (!(price > 0)) continue;
     const monthlyRent = n(r.median_rent);
     const cf = computeMonthlyCashFlow({
       price,
@@ -123,53 +117,57 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
       monthlyHoa: r.hoa_fee == null ? null : n(r.hoa_fee),
       assumptions: q.expenseAssumptions,
     });
-    if (cf.monthlyCashFlow < q.target) continue; // target filter (Feature A/B)
-    matched.push({ r, price, monthlyRent, cashFlow: cf.monthlyCashFlow, hoaMissing: cf.flags.hoaMissing });
+    // NOI = cash flow + the mortgage we subtracted (financing-independent).
+    const noiMonthly = cf.monthlyCashFlow + cf.expenses.mortgage.monthly;
+    const capRate = (noiMonthly * 12) / price;
+    scored.push({ r, price, monthlyRent, cashFlow: cf.monthlyCashFlow, capRate, hoaMissing: cf.flags.hoaMissing });
   }
 
-  // Dynamic top anchor: the 95th percentile of what's actually in view (robust
-  // to one runaway deal), floored at 2× target so there's always real spread.
-  const cfs = matched.map((m) => m.cashFlow);
-  const topAnchor = cfs.length ? Math.max(q.target * 2, percentile(cfs, 0.95)) : q.target * 2;
-  const domain = Math.max(1, topAnchor - q.target);
+  // Local spatial-outlier deal scoring across the whole in-view market.
+  const deals = scoreDeals(
+    scored.map((s) => ({ id: s.r.id as string, lat: n(s.r.lat), lng: n(s.r.lng), price: s.price, capRate: s.capRate })),
+  );
 
-  // Pass 2: colour each pin by its normalised position in [target, topAnchor].
-  const features: PinFeature[] = matched.map((m) => {
-    const t = Math.max(0, Math.min(1, (m.cashFlow - q.target) / domain));
-    return {
+  // Pass 2: build features for target-clearers, coloured by DEAL QUALITY.
+  const features: PinFeature[] = [];
+  for (const s of scored) {
+    if (s.cashFlow < q.target) continue; // target filter (Feature A/B)
+    const deal = deals.get(s.r.id as string)!;
+    features.push({
       type: "Feature",
-      geometry: { type: "Point", coordinates: [n(m.r.lng), n(m.r.lat)] },
+      geometry: { type: "Point", coordinates: [n(s.r.lng), n(s.r.lat)] },
       properties: {
-        id: m.r.id,
-        address: (m.r.formatted_address as string) ?? (m.r.city as string) ?? "Unknown",
-        propertyType: m.r.property_type,
-        bedrooms: m.r.bedrooms,
-        bathrooms: m.r.bathrooms,
-        price: m.price,
-        cashFlow: Math.round(m.cashFlow),
-        medianRent: Math.round(m.monthlyRent),
-        color: interpolatePalette(t, gradient),
-        // Heat/radius weight: keep a floor so even the lowest pin registers.
-        heatWeight: Math.max(0.08, t),
-        band: classifyBand(m.cashFlow, q.target),
-        confidence: m.r.confidence_level,
-        confidenceScore: m.r.confidence_score,
-        deEmphasize: m.r.de_emphasize,
-        hoaMissing: m.hoaMissing,
+        id: s.r.id,
+        address: (s.r.formatted_address as string) ?? (s.r.city as string) ?? "Unknown",
+        propertyType: s.r.property_type,
+        bedrooms: s.r.bedrooms,
+        bathrooms: s.r.bathrooms,
+        price: s.price,
+        cashFlow: Math.round(s.cashFlow),
+        medianRent: Math.round(s.monthlyRent),
+        capRatePct: Math.round(s.capRate * 1000) / 10,
+        localCapRatePct: Math.round(deal.localMedianCapRate * 1000) / 10,
+        relAdvantagePct: Math.round(deal.relAdvantage * 100),
+        dealScore: Math.round(deal.dealScore * 100) / 100,
+        cluster: deal.cluster,
+        belowMarket: deal.belowMarket,
+        color: interpolatePalette(deal.dealScore, gradient),
+        heatWeight: Math.max(0.08, deal.dealScore),
+        band: classifyBand(s.cashFlow, q.target),
+        confidence: s.r.confidence_level,
+        confidenceScore: s.r.confidence_score,
+        deEmphasize: s.r.de_emphasize,
+        hoaMissing: s.hoaMissing,
       },
-    };
-  });
+    });
+  }
 
-  features.sort((a, b) => (b.properties.cashFlow as number) - (a.properties.cashFlow as number));
+  // Best DEALS first (not just biggest cash flow).
+  features.sort((a, b) => (b.properties.dealScore as number) - (a.properties.dealScore as number));
   return {
     type: "FeatureCollection",
     features: features.slice(0, q.limit ?? 2000),
     scanned: rows.length,
-    colorScale: {
-      target: q.target,
-      midAnchor: Math.round(q.target + domain / 2),
-      topAnchor: Math.round(topAnchor),
-    },
   };
 }
 

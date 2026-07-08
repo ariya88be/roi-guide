@@ -109,10 +109,13 @@ const INITIAL_FILTERS: Filters = {
   ...CONSERVATIVE,
 };
 
-interface ColorScale {
-  target: number;
-  midAnchor: number;
-  topAnchor: number;
+interface DealInfo {
+  capRatePct: number;
+  localCapRatePct: number;
+  relAdvantagePct: number;
+  dealScore: number;
+  cluster: boolean;
+  belowMarket: boolean;
 }
 
 export default function MapView() {
@@ -128,7 +131,7 @@ export default function MapView() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showHeat, setShowHeat] = useState(true);
-  const [colorScale, setColorScale] = useState<ColorScale | null>(null);
+  const [dealInfo, setDealInfo] = useState<DealInfo | null>(null);
   const [scanned, setScanned] = useState<number | null>(null);
 
   // Keep the ref in sync with state (in an effect, never during render).
@@ -151,15 +154,15 @@ export default function MapView() {
       if (src) src.setData(fc);
       setCount(fc.features.length);
       setScanned(fc.scanned ?? null);
-      setColorScale(fc.colorScale ?? null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const openDetail = useCallback(async (id: string) => {
+  const openDetail = useCallback(async (id: string, deal: DealInfo | null) => {
     setDetailLoading(true);
     setDetail(null);
+    setDealInfo(deal);
     try {
       const res = await fetch(`/api/property/${id}?${assumptionQuery(filtersRef.current)}`);
       if (res.ok) setDetail(await res.json());
@@ -248,8 +251,18 @@ export default function MapView() {
       });
 
       map.on("click", "pins-circle", (e) => {
-        const id = e.features?.[0]?.properties?.id as string | undefined;
-        if (id) openDetail(id);
+        const p = e.features?.[0]?.properties;
+        const id = p?.id as string | undefined;
+        if (!id) return;
+        const bool = (v: unknown) => v === true || v === "true";
+        openDetail(id, {
+          capRatePct: Number(p!.capRatePct),
+          localCapRatePct: Number(p!.localCapRatePct),
+          relAdvantagePct: Number(p!.relAdvantagePct),
+          dealScore: Number(p!.dealScore),
+          cluster: bool(p!.cluster),
+          belowMarket: bool(p!.belowMarket),
+        });
       });
       map.on("mouseenter", "pins-circle", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "pins-circle", () => (map.getCanvas().style.cursor = ""));
@@ -459,19 +472,17 @@ export default function MapView() {
           </div>
         </details>
 
-        {/* Legend — labelled in dollars from the current viewport's scale */}
+        {/* Legend — colour = DEAL QUALITY (return on capital vs the local area) */}
         <div className="mt-4">
-          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">
-            Monthly cash flow
-          </div>
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Deal quality</div>
           <div className="h-3 w-full rounded" style={{ background: gradientCss }} />
           <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-            <span>{money(colorScale ? colorScale.target : filters.target)}</span>
-            <span>{colorScale ? money(colorScale.midAnchor) : ""}</span>
-            <span>{colorScale ? `${money(colorScale.topAnchor)}+` : ""}</span>
+            <span>Market-rate</span>
+            <span>Local bargain</span>
           </div>
           <p className="mt-1 text-[10px] leading-tight text-gray-400">
-            Red = just clears your target; green = best in view.
+            Green = high return for the price <em>and</em> a bargain vs nearby homes. Every pin already clears your
+            target; the $ label is its monthly cash flow.
           </p>
         </div>
       </div>
@@ -487,7 +498,7 @@ export default function MapView() {
             ✕
           </button>
           {detailLoading && <p className="text-sm text-gray-500">Loading…</p>}
-          {detail && <DetailCard detail={detail} />}
+          {detail && <DetailCard detail={detail} deal={dealInfo} />}
         </div>
       )}
     </div>
@@ -545,7 +556,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DetailCard({ detail }: { detail: Detail }) {
+function dealLabel(score: number): { text: string; cls: string } {
+  if (score >= 0.75) return { text: "Strong local bargain", cls: "bg-green-100 text-green-700" };
+  if (score >= 0.55) return { text: "Above the local average", cls: "bg-lime-100 text-lime-700" };
+  if (score >= 0.4) return { text: "Around market rate", cls: "bg-yellow-100 text-yellow-700" };
+  return { text: "Below-average deal", cls: "bg-orange-100 text-orange-700" };
+}
+
+function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null }) {
   const b = detail.breakdown;
   const cf = b.monthlyCashFlow;
   const line = (label: string, val: number, flag?: boolean) => (
@@ -613,6 +631,37 @@ function DetailCard({ detail }: { detail: Detail }) {
         />
       </div>
       <p className="mt-1 text-[10px] text-gray-400">Cash invested: {money(detail.investment.cashInvested)}</p>
+
+      {/* Deal quality — why this pin is the colour it is */}
+      {deal && (
+        <div className="mt-3 rounded-lg border border-gray-200 p-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Deal quality</span>
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${dealLabel(deal.dealScore).cls}`}>
+              {dealLabel(deal.dealScore).text}
+            </span>
+          </div>
+          <p className="mt-1.5 text-[11px] leading-snug text-gray-600">
+            {deal.capRatePct}% return on price vs {deal.localCapRatePct}% for nearby homes —{" "}
+            <span className={deal.relAdvantagePct >= 0 ? "font-medium text-green-700" : "font-medium text-red-600"}>
+              {deal.relAdvantagePct >= 0 ? "+" : ""}
+              {deal.relAdvantagePct}% vs the area
+            </span>
+            .
+          </p>
+          {deal.cluster && (
+            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700">
+              ⚠ One of several near-identical nearby units — verify it isn&apos;t an overbuilt complex or an
+              inflated rent estimate.
+            </p>
+          )}
+          {deal.belowMarket && (
+            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700">
+              ⚠ Priced well below the area — verify condition / why it&apos;s cheap.
+            </p>
+          )}
+        </div>
+      )}
 
       <h3 className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">How we calculated this</h3>
       <div className="mt-1">
