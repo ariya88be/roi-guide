@@ -20,6 +20,7 @@ import {
   timestamp,
   date,
   geometry,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -132,6 +133,10 @@ export const marketSnapshots = pgTable(
     medianRent: numeric("median_rent", { precision: 10, scale: 2 }),
     minRent: numeric("min_rent", { precision: 10, scale: 2 }),
     maxRent: numeric("max_rent", { precision: 10, scale: 2 }),
+    /** RentCast's per-bedroom rent breakdown, verbatim — lets a cache HIT still
+     * preserve bedroom-matched rent (see mapRentcast.pickBedroomMedianRent)
+     * instead of silently regressing to the ZIP-overall median. */
+    dataByBedrooms: jsonb("data_by_bedrooms"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [uniqueIndex("market_snapshots_zip_date_key").on(t.zipCode, t.snapshotDate)],

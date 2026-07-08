@@ -1,0 +1,1 @@
+ALTER TABLE "market_snapshots" ADD COLUMN "data_by_bedrooms" jsonb;

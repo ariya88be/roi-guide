@@ -6,12 +6,65 @@
  * passed in to keep the run deterministic.
  */
 
+import { sql } from "drizzle-orm";
 import { screenListing } from "@/lib/hygiene";
 import type { Database } from "@/db/client";
 import type { SaleListing, RentalMarket } from "@/lib/providers/rentcast";
 import { toScreenableListing, pickBedroomMedianRent } from "./mapRentcast";
 import { computeListingRoi } from "./compute";
 import { upsertProperty, upsertListing, upsertComputedRoi, upsertMarketSnapshot } from "./persist";
+
+/**
+ * Read a ZIP's rent market from `market_snapshots` if a fresh-enough row
+ * exists (rents move slowly), else fetch live and persist. Reconstructs a full
+ * `RentalMarket` — including `dataByBedrooms` — so a cache HIT still preserves
+ * bedroom-matched rent (mapRentcast.pickBedroomMedianRent) instead of silently
+ * regressing to the ZIP-overall median. This is what makes a RE-RUN over
+ * overlapping geography (e.g. resuming after a timeout) cheap.
+ */
+async function getCachedOrLiveMarket(
+  db: Database,
+  client: IngestClient,
+  zip: string,
+  snapshotDate: string,
+  maxAgeDays: number,
+): Promise<RentalMarket> {
+  const cached = (await db.execute(sql`
+    select average_rent::float as average_rent, median_rent::float as median_rent,
+           min_rent::float as min_rent, max_rent::float as max_rent,
+           active_rental_listings, data_by_bedrooms
+    from market_snapshots
+    where zip_code = ${zip} and snapshot_date >= (${snapshotDate}::date - ${maxAgeDays}::int)
+    order by snapshot_date desc
+    limit 1
+  `)) as unknown as Array<{
+    average_rent: number;
+    median_rent: number;
+    min_rent: number | null;
+    max_rent: number | null;
+    active_rental_listings: number | null;
+    data_by_bedrooms: RentalMarket["rentalData"]["dataByBedrooms"] | null;
+  }>;
+
+  if (cached.length > 0) {
+    const r = cached[0];
+    return {
+      zipCode: zip,
+      rentalData: {
+        averageRent: r.average_rent,
+        medianRent: r.median_rent,
+        minRent: r.min_rent ?? undefined,
+        maxRent: r.max_rent ?? undefined,
+        totalListings: r.active_rental_listings ?? undefined,
+        dataByBedrooms: r.data_by_bedrooms ?? undefined,
+      },
+    };
+  }
+
+  const market = await client.getRentalMarket(zip);
+  await upsertMarketSnapshot(db, zip, snapshotDate, market);
+  return market;
+}
 
 /** The subset of the RentCast client the pipeline needs (RentCastClient satisfies it). */
 export interface IngestClient {
@@ -156,6 +209,8 @@ export interface IngestRadiusParams {
    * skipped (no rent basis) — this bounds API cost on the free/low tiers.
    */
   maxMarketZips?: number;
+  /** Reuse a ZIP's market_snapshots row instead of a live call if it's this fresh. */
+  marketCacheMaxAgeDays?: number;
 }
 
 export interface RadiusSummary {
@@ -195,6 +250,7 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
     maxListings = 3000,
     maxMarketZips = 25,
     excludeCities = DEFAULT_EXCLUDED_MARKETS,
+    marketCacheMaxAgeDays = 14,
   } = params;
 
   // 1. Paginate listings within the radius.
@@ -242,9 +298,8 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
   const marketByZip = new Map<string, RentalMarket>();
   for (const zip of marketZips) {
     try {
-      const market = await client.getRentalMarket(zip);
+      const market = await getCachedOrLiveMarket(db, client, zip, snapshotDate, marketCacheMaxAgeDays);
       marketByZip.set(zip, market);
-      await upsertMarketSnapshot(db, zip, snapshotDate, market);
     } catch {
       // Skip this ZIP's listings rather than abort the whole run (e.g. quota).
     }

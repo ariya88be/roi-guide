@@ -137,6 +137,8 @@ export async function upsertMarketSnapshot(
     medianRent: String(rd.medianRent),
     minRent: numOrNull(rd.minRent),
     maxRent: numOrNull(rd.maxRent),
+    // Stored verbatim so a cache HIT can still bedroom-match (see getCachedOrLiveMarket).
+    dataByBedrooms: rd.dataByBedrooms ?? null,
   };
   await db
     .insert(marketSnapshots)
