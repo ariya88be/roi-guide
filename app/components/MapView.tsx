@@ -14,7 +14,8 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { interpolatePalette } from "@/lib/roi/color";
 
-const SAN_BERNARDINO = { lng: -117.3, lat: 34.15, zoom: 12 } as const;
+// Start looking WEST of San Bernardino, along the SB→LA corridor (Fontana/Ontario belt).
+const MAP_START = { lng: -117.5, lat: 34.03, zoom: 10 } as const;
 
 // Keyless CARTO "Voyager" raster basemap — a permissive dev/prod-friendly
 // provider (OSM's own tile server forbids heavy/app use). Swap to MapTiler or
@@ -92,11 +93,17 @@ function assumptionQuery(f: Filters): string {
 
 const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toLocaleString()}` : `$${n.toLocaleString()}`);
 
+/** A Zillow address-search link (ToS-safe deep link, not scraping). */
+function zillowUrl(address: string): string {
+  const slug = address.replace(/#/g, "").replace(/,/g, "").trim().replace(/\s+/g, "-");
+  return `https://www.zillow.com/homes/${encodeURIComponent(slug)}_rb/`;
+}
+
 // Default to all-cash so this cash-flow-tight market shows pins on first load;
 // the financing toggle reveals the (honest) financed picture.
 const INITIAL_FILTERS: Filters = {
-  target: 300,
-  budget: null,
+  target: 1400,
+  budget: 500_000,
   allCash: true,
   palette: "rdylgn",
   ...CONSERVATIVE,
@@ -167,8 +174,8 @@ export default function MapView() {
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: BASEMAP_STYLE,
-      center: [SAN_BERNARDINO.lng, SAN_BERNARDINO.lat],
-      zoom: SAN_BERNARDINO.zoom,
+      center: [MAP_START.lng, MAP_START.lat],
+      zoom: MAP_START.zoom,
       // Allow the WebGL canvas to be captured in screenshots/exports (MapLibre v5
       // nests WebGL context attributes under canvasContextAttributes).
       canvasContextAttributes: { preserveDrawingBuffer: true },
@@ -300,7 +307,7 @@ export default function MapView() {
         <h1 className="text-base font-semibold text-gray-900">ROI Guide</h1>
         <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
           Set the monthly profit you want — pins are active listings that clear it, colored by how far.
-          Coverage: San Bernardino (ZIP 92404).
+          Coverage: the Inland Empire, San Bernardino heading west toward LA.
         </p>
         <p className="mt-2 text-xs font-medium text-gray-700">
           {loading
@@ -311,7 +318,7 @@ export default function MapView() {
         </p>
         {!loading && count === 0 && scanned === 0 && (
           <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700">
-            No coverage in this view yet — we currently cover San Bernardino (ZIP 92404). Pan there or zoom out.
+            No coverage in this view yet — we cover the Inland Empire west of San Bernardino. Pan east or zoom out.
           </p>
         )}
         {!loading && count === 0 && scanned != null && scanned > 0 && (
@@ -342,9 +349,10 @@ export default function MapView() {
             min={0}
             step={10000}
             placeholder="no ceiling"
-            onChange={(e) =>
-              setFilters((f) => ({ ...f, budget: e.target.value === "" ? null : Number(e.target.value) }))
-            }
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setFilters((f) => ({ ...f, budget: e.target.value === "" || !(v > 0) ? null : v }));
+            }}
             className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm"
           />
         </label>
@@ -552,11 +560,26 @@ function DetailCard({ detail }: { detail: Detail }) {
 
   return (
     <div className="text-sm">
-      <h2 className="pr-6 text-base font-semibold text-gray-900">{detail.property.address}</h2>
+      <a
+        href={zillowUrl(detail.property.address)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="pr-6 text-base font-semibold text-blue-700 hover:underline"
+      >
+        {detail.property.address}
+      </a>
       <p className="text-xs text-gray-500">
         {detail.property.propertyType} · {detail.property.bedrooms}bd/{detail.property.bathrooms}ba ·{" "}
         {money(detail.listing.price)}
       </p>
+      <a
+        href={zillowUrl(detail.property.address)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
+      >
+        View on Zillow ↗
+      </a>
 
       <div className="mt-3 rounded-lg bg-gray-50 p-3">
         <div className="text-xs text-gray-500">Monthly cash flow</div>

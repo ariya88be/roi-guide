@@ -96,6 +96,43 @@ export async function ingestZip(params: IngestZipParams): Promise<IngestSummary>
   return { zipCode, fetched: raw.length, screenedOut, skippedNoRent, ingested };
 }
 
+/**
+ * Mountain + high-desert vacation-cabin markets NE of San Bernardino. Their
+ * long-term-rent medians are thin/unreliable (short-term/vacation economies), so
+ * they don't belong in a buy-and-hold cash-flow tool. Excluded by default.
+ */
+export const DEFAULT_EXCLUDED_MARKETS = new Set(
+  [
+    "Big Bear Lake",
+    "Big Bear City",
+    "Lake Arrowhead",
+    "Crestline",
+    "Running Springs",
+    "Green Valley Lake",
+    "Fawnskin",
+    "Angelus Oaks",
+    "Sugarloaf",
+    "Blue Jay",
+    "Cedar Glen",
+    "Twin Peaks",
+    "Rimforest",
+    "Wrightwood",
+    "Hesperia",
+    "Apple Valley",
+    "Victorville",
+    "Adelanto",
+    "Phelan",
+    "Oak Hills",
+    "Pinon Hills",
+    "Lucerne Valley",
+    "Yucca Valley",
+    "Joshua Tree",
+    "Landers",
+    "Forest Falls",
+    "Mount Baldy",
+  ].map((c) => c.toLowerCase()),
+);
+
 export interface IngestRadiusParams {
   client: IngestClient;
   db: Database;
@@ -105,6 +142,8 @@ export interface IngestRadiusParams {
   snapshotDate: string;
   /** Only ingest listings at or below this price (client-side; provider has no price filter). */
   maxPrice?: number | null;
+  /** Cities to skip (vacation/desert). Defaults to {@link DEFAULT_EXCLUDED_MARKETS}. */
+  excludeCities?: Set<string>;
   /** Listings per page. */
   pageSize?: number;
   /** Safety cap on total listings pulled. */
@@ -125,6 +164,8 @@ export interface RadiusSummary {
   screenedOut: number;
   skippedNoRent: number;
   ingested: number;
+  /** Listings that threw during compute/persist (e.g. bad price) and were skipped. */
+  errored: number;
   /** ZIPs we pulled market data for. */
   zipsWithMarket: number;
   /** ZIPs with inventory we skipped to stay in budget. */
@@ -151,6 +192,7 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
     pageSize = 500,
     maxListings = 3000,
     maxMarketZips = 25,
+    excludeCities = DEFAULT_EXCLUDED_MARKETS,
   } = params;
 
   // 1. Paginate listings within the radius.
@@ -177,8 +219,12 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
     offset += pageSize;
   }
 
-  // 2. Price cap.
-  const priced = maxPrice != null ? all.filter((l) => l.price <= maxPrice) : all;
+  // 2. Price cap + drop excluded (vacation/desert) markets before spending calls.
+  const priced = all.filter(
+    (l) =>
+      (maxPrice == null || l.price <= maxPrice) &&
+      !(l.city && excludeCities.has(l.city.trim().toLowerCase())),
+  );
 
   // 3. Group by ZIP; fetch market for the highest-inventory ZIPs only.
   const byZip = new Map<string, SaleListing[]>();
@@ -206,6 +252,7 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
   let screenedOut = 0;
   let skippedNoRent = 0;
   let ingested = 0;
+  let errored = 0;
   for (const listing of priced) {
     const screen = screenListing(toScreenableListing(listing, now), now);
     if (!screen.render) {
@@ -222,16 +269,21 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
       skippedNoRent++;
       continue;
     }
-    const roi = computeListingRoi({
-      price: listing.price,
-      monthlyRent: pick.rent,
-      monthlyHoa: listing.hoa?.fee ?? null,
-      sampleSize: pick.sampleSize,
-    });
-    const propertyId = await upsertProperty(db, listing);
-    const listingId = await upsertListing(db, propertyId, listing, now);
-    await upsertComputedRoi(db, listingId, propertyId, roi);
-    ingested++;
+    try {
+      const roi = computeListingRoi({
+        price: listing.price,
+        monthlyRent: pick.rent,
+        monthlyHoa: listing.hoa?.fee ?? null,
+        sampleSize: pick.sampleSize,
+      });
+      const propertyId = await upsertProperty(db, listing);
+      const listingId = await upsertListing(db, propertyId, listing, now);
+      await upsertComputedRoi(db, listingId, propertyId, roi);
+      ingested++;
+    } catch {
+      // One malformed listing (e.g. non-positive price) must not abort the run.
+      errored++;
+    }
   }
 
   return {
@@ -240,6 +292,7 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
     screenedOut,
     skippedNoRent,
     ingested,
+    errored,
     zipsWithMarket: marketByZip.size,
     zipsSkipped: byZip.size - marketByZip.size,
     approxApiCalls: pages + marketByZip.size,

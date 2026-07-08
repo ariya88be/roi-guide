@@ -26,14 +26,19 @@ live("LIVE radius ingest (real RentCast + DB)", () => {
         const summary = await ingestRadius({
           client,
           db,
-          center: { lat: 34.108, lng: -117.29 }, // San Bernardino
-          radiusMiles: 25,
+          // Default: WEST of San Bernardino (Fontana/Ontario belt, toward LA),
+          // biased to the SB→Santa Monica corridor. Override via env.
+          center: {
+            lat: Number(process.env.INGEST_LAT ?? 34.02),
+            lng: Number(process.env.INGEST_LNG ?? -117.58),
+          },
+          radiusMiles: Number(process.env.INGEST_RADIUS ?? 22),
           now: new Date(),
           snapshotDate: new Date().toISOString().slice(0, 10),
           maxPrice: 500_000,
           pageSize: 500,
           maxListings: Number(process.env.INGEST_MAX_LISTINGS ?? 3000),
-          maxMarketZips: Number(process.env.INGEST_MAX_ZIPS ?? 30),
+          maxMarketZips: Number(process.env.INGEST_MAX_ZIPS ?? 50),
         });
         console.log("RADIUS INGEST SUMMARY:", JSON.stringify(summary));
         expect(summary.ingested).toBeGreaterThanOrEqual(0);
