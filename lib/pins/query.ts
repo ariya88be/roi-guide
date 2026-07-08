@@ -210,6 +210,21 @@ export async function queryPropertyDetail(id: string, opts: DetailOptions) {
   });
   const afterTax = roughAfterTaxMonthlyCashFlow({ price, preTaxMonthlyCashFlow: cf.monthlyCashFlow });
   const money = (v: number) => Math.round(v);
+  const pct1 = (frac: number) => Math.round(frac * 1000) / 10;
+
+  // Investor metrics from data we already have.
+  const cashInvested = opts.financing.allCash ? price : price * opts.financing.downPaymentPct;
+  const e = cf.expenses;
+  // NOI excludes financing (mortgage P&I).
+  const monthlyNOI =
+    monthlyRent -
+    (e.vacancy.monthly + e.management.monthly + e.maintenance.monthly + e.propertyTax.monthly + e.insurance.monthly + e.hoa.monthly);
+  const investment = {
+    cashInvested: money(cashInvested),
+    cashOnCashPct: cashInvested > 0 ? pct1((cf.monthlyCashFlow * 12) / cashInvested) : null,
+    capRatePct: price > 0 ? pct1((monthlyNOI * 12) / price) : null,
+    rentToPricePct: price > 0 ? pct1((monthlyRent * 12) / price) : null,
+  };
 
   return {
     property: {
@@ -253,7 +268,13 @@ export async function queryPropertyDetail(id: string, opts: DetailOptions) {
       insuranceEstimated: cf.flags.insuranceEstimated,
     },
     afterTax: { roughMonthly: money(afterTax.roughAfterTaxMonthlyCashFlow), disclaimer: afterTax.disclaimer },
-    confidence: { level: r.confidence_level, score: r.confidence_score, deEmphasize: r.de_emphasize },
+    investment,
+    confidence: {
+      level: r.confidence_level,
+      score: r.confidence_score,
+      deEmphasize: r.de_emphasize,
+      note: "Rent is the ZIP bedroom-matched median (Phase 1), not property-level comps yet — so confidence caps at Medium.",
+    },
     computedAt: r.computed_at,
   };
 }

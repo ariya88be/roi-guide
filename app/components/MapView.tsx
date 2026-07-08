@@ -16,17 +16,25 @@ import { interpolatePalette } from "@/lib/roi/color";
 
 const SAN_BERNARDINO = { lng: -117.3, lat: 34.15, zoom: 12 } as const;
 
+// Keyless CARTO "Voyager" raster basemap — a permissive dev/prod-friendly
+// provider (OSM's own tile server forbids heavy/app use). Swap to MapTiler or
+// Protomaps vector tiles (with a key) for the final polish.
 const BASEMAP_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    osm: {
+    carto: {
       type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tiles: [
+        "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+      ],
       tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
+      attribution: "© OpenStreetMap contributors © CARTO",
     },
   },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
+  layers: [{ id: "carto", type: "raster", source: "carto" }],
 };
 
 interface Filters {
@@ -34,7 +42,22 @@ interface Filters {
   budget: number | null;
   allCash: boolean;
   palette: "rdylgn" | "viridis";
+  downPaymentPct: number;
+  annualRatePct: number;
+  termMonths: number;
+  vacancyPct: number;
+  managementPct: number;
+  maintenancePct: number;
 }
+
+const CONSERVATIVE = {
+  downPaymentPct: 0.2,
+  annualRatePct: 7,
+  termMonths: 360,
+  vacancyPct: 0.06,
+  managementPct: 0.08,
+  maintenancePct: 0.08,
+} as const;
 
 interface Detail {
   property: { address: string; propertyType: string; bedrooms: number; bathrooms: number };
@@ -43,15 +66,27 @@ interface Detail {
   breakdown: Record<string, number>;
   flags: { hoaMissing: boolean; taxEstimated: boolean; insuranceEstimated: boolean };
   afterTax: { roughMonthly: number; disclaimer: string };
-  confidence: { level: string; score: number; deEmphasize: boolean };
+  investment: {
+    cashInvested: number;
+    cashOnCashPct: number | null;
+    capRatePct: number | null;
+    rentToPricePct: number | null;
+  };
+  confidence: { level: string; score: number; deEmphasize: boolean; note: string };
 }
 
 function assumptionQuery(f: Filters): string {
   const p = new URLSearchParams();
   p.set("target", String(f.target));
   if (f.budget != null) p.set("budget", String(f.budget));
-  if (f.allCash) p.set("allCash", "true");
+  p.set("allCash", f.allCash ? "true" : "false");
   p.set("palette", f.palette);
+  p.set("downPaymentPct", String(f.downPaymentPct));
+  p.set("annualRatePct", String(f.annualRatePct));
+  p.set("termMonths", String(f.termMonths));
+  p.set("vacancyPct", String(f.vacancyPct));
+  p.set("managementPct", String(f.managementPct));
+  p.set("maintenancePct", String(f.maintenancePct));
   return p.toString();
 }
 
@@ -59,7 +94,13 @@ const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toLocaleString()}` : `$${
 
 // Default to all-cash so this cash-flow-tight market shows pins on first load;
 // the financing toggle reveals the (honest) financed picture.
-const INITIAL_FILTERS: Filters = { target: 300, budget: null, allCash: true, palette: "rdylgn" };
+const INITIAL_FILTERS: Filters = {
+  target: 300,
+  budget: null,
+  allCash: true,
+  palette: "rdylgn",
+  ...CONSERVATIVE,
+};
 
 interface ColorScale {
   target: number;
@@ -81,6 +122,7 @@ export default function MapView() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [showHeat, setShowHeat] = useState(true);
   const [colorScale, setColorScale] = useState<ColorScale | null>(null);
+  const [scanned, setScanned] = useState<number | null>(null);
 
   // Keep the ref in sync with state (in an effect, never during render).
   useEffect(() => {
@@ -101,6 +143,7 @@ export default function MapView() {
       const src = map.getSource("pins") as maplibregl.GeoJSONSource | undefined;
       if (src) src.setData(fc);
       setCount(fc.features.length);
+      setScanned(fc.scanned ?? null);
       setColorScale(fc.colorScale ?? null);
     } finally {
       setLoading(false);
@@ -218,9 +261,11 @@ export default function MapView() {
     };
   }, [fetchPins, openDetail]);
 
-  // Refetch when filters change.
+  // Refetch when filters change — debounced so typing/sliding doesn't spam the API.
   useEffect(() => {
-    if (mapRef.current?.isStyleLoaded()) fetchPins();
+    if (!mapRef.current?.isStyleLoaded()) return;
+    const id = setTimeout(fetchPins, 350);
+    return () => clearTimeout(id);
   }, [filters, fetchPins]);
 
   // Toggle the heat layer without refetching.
@@ -230,6 +275,16 @@ export default function MapView() {
       map.setLayoutProperty("pins-heat", "visibility", showHeat ? "visible" : "none");
     }
   }, [showHeat]);
+
+  // Esc closes the detail card.
+  useEffect(() => {
+    if (!detail && !detailLoading) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDetail(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detail, detailLoading]);
 
   const gConf = { palette: filters.palette, direction: "higher-is-better" as const, belowTarget: "grey" as const };
   const gradientCss = `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1]
@@ -242,14 +297,28 @@ export default function MapView() {
 
       {/* Controls */}
       <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur">
-        <h1 className="text-base font-semibold text-gray-900">ROI Guide — San Bernardino</h1>
-        <p className="mt-0.5 text-xs text-gray-500">
-          {loading ? "Loading…" : count == null ? "" : `${count} propert${count === 1 ? "y" : "ies"} meet your target`}
+        <h1 className="text-base font-semibold text-gray-900">ROI Guide</h1>
+        <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
+          Set the monthly profit you want — pins are active listings that clear it, colored by how far.
+          Coverage: San Bernardino (ZIP 92404).
         </p>
-        {!loading && count === 0 && (
+        <p className="mt-2 text-xs font-medium text-gray-700">
+          {loading
+            ? "Loading…"
+            : count == null
+              ? "Pan or zoom to load listings"
+              : `${count} of ${scanned ?? count} listing${(scanned ?? count) === 1 ? "" : "s"} clear your target`}
+        </p>
+        {!loading && count === 0 && scanned === 0 && (
+          <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700">
+            No coverage in this view yet — we currently cover San Bernardino (ZIP 92404). Pan there or zoom out.
+          </p>
+        )}
+        {!loading && count === 0 && scanned != null && scanned > 0 && (
           <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-tight text-amber-700">
-            Nothing clears +${filters.target.toLocaleString()}/mo here
-            {filters.allCash ? "" : " with a loan at 7%"}. Try the All-cash toggle, lower your target, or pan the map.
+            {scanned} active listing{scanned === 1 ? "" : "s"} here, but none clear +${filters.target.toLocaleString()}/mo
+            {filters.allCash ? "" : ` with ${Math.round(filters.downPaymentPct * 100)}% down @ ${filters.annualRatePct}%`}. Lower
+            your target{filters.allCash ? "" : " or try All-cash"}.
           </p>
         )}
 
@@ -309,6 +378,79 @@ export default function MapView() {
           Colourblind-safe palette
         </label>
 
+        {/* Assumption sliders — recompute cash flow live */}
+        <details className="mt-3 border-t border-gray-200 pt-2">
+          <summary className="cursor-pointer text-xs font-medium text-gray-700">Assumptions</summary>
+          <div className="mt-1">
+            <Slider
+              label="Down payment"
+              value={Math.round(filters.downPaymentPct * 100)}
+              min={0}
+              max={50}
+              step={5}
+              suffix="%"
+              disabled={filters.allCash}
+              onChange={(v) => setFilters((f) => ({ ...f, downPaymentPct: v / 100 }))}
+            />
+            <Slider
+              label="Interest rate"
+              value={filters.annualRatePct}
+              min={0}
+              max={12}
+              step={0.25}
+              suffix="%"
+              disabled={filters.allCash}
+              onChange={(v) => setFilters((f) => ({ ...f, annualRatePct: v }))}
+            />
+            <label className={`mt-2 block ${filters.allCash ? "opacity-40" : ""}`}>
+              <span className="text-[11px] text-gray-600">Loan term</span>
+              <select
+                value={filters.termMonths}
+                disabled={filters.allCash}
+                onChange={(e) => setFilters((f) => ({ ...f, termMonths: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm"
+              >
+                <option value={180}>15 years</option>
+                <option value={360}>30 years</option>
+              </select>
+            </label>
+            <Slider
+              label="Vacancy reserve"
+              value={Math.round(filters.vacancyPct * 100)}
+              min={0}
+              max={15}
+              step={1}
+              suffix="%"
+              onChange={(v) => setFilters((f) => ({ ...f, vacancyPct: v / 100 }))}
+            />
+            <Slider
+              label="Management"
+              value={Math.round(filters.managementPct * 100)}
+              min={0}
+              max={12}
+              step={1}
+              suffix="%"
+              onChange={(v) => setFilters((f) => ({ ...f, managementPct: v / 100 }))}
+            />
+            <Slider
+              label="Maintenance / CapEx"
+              value={Math.round(filters.maintenancePct * 100)}
+              min={0}
+              max={15}
+              step={1}
+              suffix="%"
+              onChange={(v) => setFilters((f) => ({ ...f, maintenancePct: v / 100 }))}
+            />
+            <button
+              type="button"
+              onClick={() => setFilters((f) => ({ ...f, ...CONSERVATIVE }))}
+              className="mt-2 text-[11px] text-blue-600 hover:underline"
+            >
+              Reset to conservative defaults
+            </button>
+          </div>
+        </details>
+
         {/* Legend — labelled in dollars from the current viewport's scale */}
         <div className="mt-4">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">
@@ -340,6 +482,57 @@ export default function MapView() {
           {detail && <DetailCard detail={detail} />}
         </div>
       )}
+    </div>
+  );
+}
+
+function Slider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className={`mt-2 block ${disabled ? "opacity-40" : ""}`}>
+      <div className="flex justify-between text-[11px] text-gray-600">
+        <span>{label}</span>
+        <span className="font-medium tabular-nums">
+          {value}
+          {suffix}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1 h-4 w-full accent-green-600"
+      />
+    </label>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-gray-50 py-1.5">
+      <div className="text-sm font-semibold text-gray-900">{value}</div>
+      <div className="text-[10px] text-gray-500">{label}</div>
     </div>
   );
 }
@@ -381,7 +574,22 @@ function DetailCard({ detail }: { detail: Detail }) {
             {detail.confidence.level} confidence ({detail.confidence.score})
           </span>
         </div>
+        <p className="mt-1 text-[10px] leading-tight text-gray-500">{detail.confidence.note}</p>
       </div>
+
+      {/* Investor metrics from data we already have */}
+      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <Metric
+          label="Cash-on-cash"
+          value={detail.investment.cashOnCashPct == null ? "—" : `${detail.investment.cashOnCashPct}%`}
+        />
+        <Metric label="Cap rate" value={detail.investment.capRatePct == null ? "—" : `${detail.investment.capRatePct}%`} />
+        <Metric
+          label="Rent / price"
+          value={detail.investment.rentToPricePct == null ? "—" : `${detail.investment.rentToPricePct}%`}
+        />
+      </div>
+      <p className="mt-1 text-[10px] text-gray-400">Cash invested: {money(detail.investment.cashInvested)}</p>
 
       <h3 className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">How we calculated this</h3>
       <div className="mt-1">

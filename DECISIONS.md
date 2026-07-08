@@ -317,3 +317,35 @@ also failed to load its style, and a fresh tab too, so it is environmental
 (worker/session), not this change. The map rendered fine earlier today; the new
 colour/scale logic is verified via the /api/pins response. Verify visually in a
 normal browser (hard refresh / restart Chrome).
+
+---
+
+## 2026-07-07 — Sliders, first-run context, keyless basemap (audit fixes 3 & 4)
+
+**Fix 3 — assumption sliders (decided for Phase 1, never shipped).** Added a
+collapsible Assumptions panel: down payment, interest rate, loan term, vacancy,
+management, maintenance + "reset to conservative defaults". Wired to the
+already-parameterized API, debounced (350ms) so sliding/typing doesn't spam
+requests. This answers the core investor question — API-verified: at 7% financed,
+20–65% down still clears 0 pins at +$300/mo; all-cash clears 17 (the honest
+crossover is ~75%+ down). Detail card now also shows **cash-on-cash, cap rate,
+rent/price, cash invested** (all derivable from data we had) and a confidence
+rationale line.
+
+**Fix 4 — first-run context + honest empty states.** Added a one-line intro and
+coverage note. The old empty-state falsely told users to "try all-cash" when the
+truth was no data — now split on the API's `scanned`: `scanned=0` → "No coverage
+here yet — we cover San Bernardino (92404)"; `scanned>0, count=0` → "N listings
+checked, none clear +$X (with Y% down @ Z%)". Legend already dollar-labelled.
+Esc closes the detail card.
+
+**Basemap → CARTO Voyager (keyless).** Swapped off OSM's own tile server (its
+usage policy forbids app/heavy use). MapTiler/Protomaps vector tiles remain the
+production target.
+
+**Verification:** typecheck + eslint + `npm audit` clean; 137 tests / 11 skip.
+API-verified end to end. The control panel renders all the new UI (confirmed by
+screenshot); the WebGL map canvas stayed black due to WebGL-context exhaustion in
+the automated Chrome session (self-inflicted by ~6 throwaway debug maps; a
+trivial background-only map fails too). Cleared by a browser restart — verify in
+a fresh browser.
