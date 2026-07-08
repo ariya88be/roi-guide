@@ -61,8 +61,15 @@ export interface ExpenseAssumptions {
 export interface PinsQuery {
   bbox: BBox;
   target: number;
-  budget?: number | null;
-  mode: "budget_return" | "return_only";
+  /** Price floor/ceiling (inclusive); null = unbounded on that side. */
+  budgetMin?: number | null;
+  budgetMax?: number | null;
+  /**
+   * What the `target` filters on and what the pin's headline number means:
+   * "profit" = net monthly cash flow after every expense (the default), or
+   * "revenue" = gross monthly rent before any expenses.
+   */
+  basis: "profit" | "revenue";
   financing: FinancingParams;
   expenseAssumptions: ExpenseAssumptions;
   gradient?: GradientConfig;
@@ -118,13 +125,16 @@ function qualityFactor(r: Row): number {
 
 export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   const db = getDb();
-  const budgetCond =
-    q.mode === "budget_return" && q.budget != null ? sql`and l.price <= ${q.budget}` : sql``;
 
+  // NOTE: the price/budget range is applied in JS (Pass 1), NOT in this SQL, so
+  // `scanned` stays budget-independent — that's what lets the UI tell "no
+  // listings here at all" (a real coverage gap) apart from "listings here, just
+  // none in your price range". Ordered price-ascending, so the SCAN_CAP keeps
+  // the cheaper (likelier in-budget) listings if a dense viewport truncates.
   const rows = (await db.execute(sql`
     select p.id, p.formatted_address, p.city, p.property_type,
            p.bedrooms::float as bedrooms, p.bathrooms::float as bathrooms,
-           l.price::float as price, l.hoa_fee::float as hoa_fee,
+           l.price::float as price, l.hoa_fee::float as hoa_fee, l.price_history,
            cr.median_rent::float as median_rent,
            cr.confidence_level, cr.confidence_score, cr.de_emphasize, cr.hoa_missing,
            ST_X(p.location) as lng, ST_Y(p.location) as lat
@@ -133,7 +143,6 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
     join properties p on l.property_id = p.id
     where l.is_active = true
       and p.location && ST_MakeEnvelope(${q.bbox.minLng}, ${q.bbox.minLat}, ${q.bbox.maxLng}, ${q.bbox.maxLat}, 4326)
-      ${budgetCond}
     order by cr.confidence_score desc, l.price asc
     limit ${SCAN_CAP}
   `)) as unknown as Row[];
@@ -155,6 +164,9 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   for (const r of rows) {
     const price = n(r.price);
     if (!(price > 0)) continue;
+    // Price/budget range (applied here, not in SQL — see the query note above).
+    if (q.budgetMin != null && price < q.budgetMin) continue;
+    if (q.budgetMax != null && price > q.budgetMax) continue;
     if (q.houseOnly) {
       const typeToken = normalizeToken(String(r.property_type ?? ""));
       const knownHoa = r.hoa_fee != null && n(r.hoa_fee) > 0;
@@ -182,7 +194,10 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   // Pass 2: build features for target-clearers, coloured by DEAL QUALITY.
   const features: PinFeature[] = [];
   for (const s of scored) {
-    if (s.cashFlow < q.target) continue; // target filter (Feature A/B)
+    // The target filters on net cash flow (profit) or gross rent (revenue),
+    // per the caller's chosen basis.
+    const targetValue = q.basis === "revenue" ? s.monthlyRent : s.cashFlow;
+    if (targetValue < q.target) continue;
     const deal = deals.get(s.r.id as string)!;
     // Data-quality demotion: a listing our own confidence engine flags
     // (de-emphasised, or Low confidence because the rent basis probably doesn't
@@ -212,11 +227,17 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
         belowMarket: deal.belowMarket,
         color: interpolatePalette(effScore, gradient),
         heatWeight: Math.max(0.08, effScore),
-        band: classifyBand(s.cashFlow, q.target),
+        // Band compares the SAME quantity the target filters on (net cash flow
+        // for profit, gross rent for revenue) against the target, so it stays
+        // meaningful under either basis.
+        band: classifyBand(targetValue, q.target),
         confidence: s.r.confidence_level,
         confidenceScore: s.r.confidence_score,
         deEmphasize: s.r.de_emphasize,
         hoaMissing: s.hoaMissing,
+        // Compact price-history series (RentCast listing history) for the
+        // minimal sparkline in the property list; null until backfilled.
+        priceHistory: s.r.price_history ?? null,
       },
     });
   }

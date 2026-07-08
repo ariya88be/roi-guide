@@ -76,6 +76,9 @@ export const listings = pgTable(
     price: numeric("price", { precision: 12, scale: 2 }).notNull(),
     /** NULL = HOA unknown (flag + lower confidence). 0 = confirmed no HOA. */
     hoaFee: numeric("hoa_fee", { precision: 10, scale: 2 }),
+    /** Compact price-history series [{date,price}] from RentCast's listing
+     * `history`, oldest→newest — drives the minimal sparkline in the UI. */
+    priceHistory: jsonb("price_history"),
     listedDate: date("listed_date"),
     removedDate: date("removed_date"),
     firstSeen: timestamp("first_seen", { withTimezone: true }).defaultNow().notNull(),

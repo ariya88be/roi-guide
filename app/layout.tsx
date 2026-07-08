@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ROI Guide — honest cash-flow returns on the map",
+  title: "LA ROI Guide — honest cash-flow returns on the map",
   description:
     "Scan a market and see the conservative monthly cash-flow return of available properties as color-coded pins — every number traceable to the data behind it.",
 };

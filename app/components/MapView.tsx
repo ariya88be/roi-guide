@@ -53,6 +53,38 @@ function prefersDark(): boolean {
 }
 
 /**
+ * A tiny "made by ariya" credit, implemented as a real MapLibre control (not an
+ * absolutely-positioned React element) specifically so it STACKS directly
+ * beneath the zoom +/- buttons in the same bottom-right corner group — MapLibre
+ * owns that stacking/spacing, which is far more reliable than guessing Tailwind
+ * offsets against it. Faint by default (a quiet credit, not a call to action);
+ * full opacity on hover.
+ */
+class CreditControl implements maplibregl.IControl {
+  private el: HTMLElement | null = null;
+  onAdd(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "maplibregl-ctrl";
+    const a = document.createElement("a");
+    a.href = "https://www.ariya.be/me";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "made by ariya";
+    a.style.cssText =
+      "display:block;padding:3px 8px;font:500 11px/1.2 inherit;color:#374151;text-decoration:none;opacity:0.5;white-space:nowrap;background:rgba(255,255,255,0.7);border-radius:9999px;margin-top:4px;transition:opacity 0.15s;";
+    a.onmouseenter = () => (a.style.opacity = "1");
+    a.onmouseleave = () => (a.style.opacity = "0.5");
+    el.appendChild(a);
+    this.el = el;
+    return el;
+  }
+  onRemove(): void {
+    this.el?.remove();
+    this.el = null;
+  }
+}
+
+/**
  * Ordinal cluster grades, best → worst: A+, A, A-, B+, … Z-, i.e. 26 letters ×
  * {+, ·, −} = 78 unique grades. Clusters in view are RANKED by average deal
  * quality and assigned one grade each (exactly one A+, one A, …); if a view has
@@ -99,7 +131,11 @@ function makePinImage(): ImageData | null {
 
 interface Filters {
   target: number;
-  budget: number | null;
+  /** Price floor/ceiling (inclusive); null = unbounded on that side. */
+  budgetMin: number | null;
+  budgetMax: number | null;
+  /** "profit" = net monthly cash flow; "revenue" = gross monthly rent. */
+  basis: "profit" | "revenue";
   allCash: boolean;
   palette: "rdylgn" | "viridis";
   downPaymentPct: number;
@@ -140,7 +176,9 @@ interface Detail {
 function assumptionQuery(f: Filters): string {
   const p = new URLSearchParams();
   p.set("target", String(f.target));
-  if (f.budget != null) p.set("budget", String(f.budget));
+  if (f.budgetMin != null) p.set("budgetMin", String(f.budgetMin));
+  if (f.budgetMax != null) p.set("budgetMax", String(f.budgetMax));
+  p.set("basis", f.basis);
   p.set("allCash", f.allCash ? "true" : "false");
   p.set("palette", f.palette);
   p.set("downPaymentPct", String(f.downPaymentPct));
@@ -176,11 +214,14 @@ function escapeHtml(s: string): string {
  * iframing and we don't scrape it) — this is our OWN data, styled like a quick
  * preview card, so a user can gauge a pin before opening the real Zillow tab.
  */
-function buildPreviewHtml(p: Record<string, unknown>, dark: boolean): string {
+function buildPreviewHtml(p: Record<string, unknown>, dark: boolean, basis: "profit" | "revenue"): string {
   const rank = Number(p.rank);
   const address = escapeHtml(String(p.address ?? "Unknown address"));
   const price = Number(p.price);
   const cashFlow = Number(p.cashFlow);
+  // Headline number tracks the chosen basis, same as the list + target label.
+  const primary = basis === "revenue" ? Number(p.medianRent) : cashFlow;
+  const primarySuffix = basis === "revenue" ? "/mo rent" : "/mo";
   const capRatePct = Number(p.capRatePct);
   const localCapRatePct = Number(p.localCapRatePct);
   const relAdvantagePct = Number(p.relAdvantagePct);
@@ -199,7 +240,7 @@ function buildPreviewHtml(p: Record<string, unknown>, dark: boolean): string {
       </div>
       <div style="margin-top:4px;font-size:12px;color:${textSecondary}">${address}</div>
       <div style="margin-top:4px;display:flex;justify-content:space-between;font-size:12px">
-        <span style="font-weight:600;color:${dark ? "#4ade80" : "#15803d"}">${money(cashFlow)}/mo</span>
+        <span style="font-weight:600;color:${dark ? "#4ade80" : "#15803d"}">${money(primary)}${primarySuffix}</span>
         <span style="color:${textMuted}">${capRatePct}% cap (area ${localCapRatePct}%)</span>
       </div>
       <div style="margin-top:2px;font-size:10px;color:${relColor}">${relAdvantagePct >= 0 ? "+" : ""}${relAdvantagePct}% vs area — ${label.text}</div>
@@ -212,7 +253,9 @@ function buildPreviewHtml(p: Record<string, unknown>, dark: boolean): string {
 // the financing toggle reveals the (honest) financed picture.
 const INITIAL_FILTERS: Filters = {
   target: 1400,
-  budget: 500_000,
+  budgetMin: 45_000,
+  budgetMax: 500_000,
+  basis: "profit",
   allCash: true,
   palette: "rdylgn",
   houseOnly: false,
@@ -255,6 +298,8 @@ interface PinFeature {
     deEmphasize: boolean;
     hoaMissing: boolean;
     rank: number;
+    /** Oldest→newest price points for the sparkline; null until backfilled. */
+    priceHistory: { date: string; price: number }[] | null;
   };
 }
 
@@ -263,6 +308,10 @@ export default function MapView() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   // Latest filters, readable inside map event handlers without re-registering them.
   const filtersRef = useRef<Filters>(INITIAL_FILTERS);
+  // Latest starredIds, readable inside fetchPins (a useCallback([]), so it
+  // can't close over the state directly) to refresh the starred-property
+  // cache whenever fresh data arrives — see fetchPins below.
+  const starredIdsRef = useRef<Set<string>>(new Set());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewPopupRef = useRef<maplibregl.Popup | null>(null);
   // Monotonic id for the latest fetch, so a slow earlier response can't
@@ -272,6 +321,19 @@ export default function MapView() {
   // (an ordinal ranking can't be done in a MapLibre expression, and feature
   // state can't drive the layout text-field — so grades live in the DOM).
   const clusterGradeMarkersRef = useRef<maplibregl.Marker[]>([]);
+  // Star markers for OUT-OF-FRAME starred properties — a plain HTML marker per
+  // id, keyed so it can be added/removed as stars toggle or the property comes
+  // back into the fetched viewport (where its normal numbered pin already
+  // marks the spot, so the separate star marker steps aside).
+  const starMarkersRef = useRef<Record<string, maplibregl.Marker>>({});
+  // Heatmap gating: the glow only shows when the user has it on AND there are
+  // enough homes in frame (>=4) for a density map to mean anything. showHeatRef
+  // mirrors the checkbox; heatEligibleRef is recomputed on every idle from the
+  // count of homes actually in view; applyHeatRef lets the checkbox effect
+  // trigger the same visibility logic the idle handler owns.
+  const showHeatRef = useRef(true);
+  const heatEligibleRef = useRef(false);
+  const applyHeatRef = useRef<() => void>(() => {});
   // Read by map event handlers (registered once at map init) so they see the
   // CURRENT Night-mode value rather than the one captured at setup time.
   const darkModeRef = useRef(false);
@@ -300,6 +362,16 @@ export default function MapView() {
   // from the map/ranking entirely, not just visually dimmed, and persists
   // across pans/zooms/refetches within the session.
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  // Starred properties — kept in the Properties list (and marked on the map)
+  // across pans/zooms specifically so you can rate a home in one part of town
+  // against another without losing track of either.
+  const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
+  // Full feature data for every starred property, captured at star-time (or
+  // refreshed whenever it's re-fetched) — needed so a starred property still
+  // has an address/coords/price to show in the list and on the map after you
+  // pan away and it drops out of `pinList`. Real state (not a ref) so it can
+  // be read safely during render (combinedList below).
+  const [starredFeatures, setStarredFeatures] = useState<Record<string, PinFeature>>({});
   // Lazy initializer: reads the OS preference once, only on the client.
   const [darkMode, setDarkMode] = useState<boolean>(prefersDark);
 
@@ -310,6 +382,9 @@ export default function MapView() {
   useEffect(() => {
     darkModeRef.current = darkMode;
   }, [darkMode]);
+  useEffect(() => {
+    starredIdsRef.current = starredIds;
+  }, [starredIds]);
 
   const toggleHidden = useCallback((id: string) => {
     setHiddenIds((prev) => {
@@ -318,20 +393,55 @@ export default function MapView() {
       else next.add(id);
       return next;
     });
+    // Hiding a property also un-stars it — a hidden home isn't something
+    // you're actively comparing, so it drops out of the starred set too.
+    setStarredIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  /** Star/unstar. Takes the full feature (not just the id) so a snapshot of
+   * its data survives after it drops out of `pinList` (e.g. you pan away).
+   * Unstarring also drops its cached snapshot — the cache only ever needs to
+   * hold data for CURRENTLY-starred ids. */
+  const toggleStar = useCallback((f: PinFeature) => {
+    const id = f.properties.id;
+    setStarredIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        setStarredFeatures((sf) => {
+          if (!(id in sf)) return sf;
+          const nextSf = { ...sf };
+          delete nextSf[id];
+          return nextSf;
+        });
+      } else {
+        next.add(id);
+        setStarredFeatures((sf) => ({ ...sf, [id]: f }));
+      }
+      return next;
+    });
   }, []);
 
   // Remove hidden properties entirely from the MAP (not shown, don't count
   // toward clusters) and re-rank what's left 1..N — rank always reflects what
-  // the USER has chosen to see, not just what the server returned.
+  // the USER has chosen to see, not just what the server returned. This SAME
+  // 1..N sequence is what the Properties list numbers too (see listRows) —
+  // the two must never diverge, since the list doubles as the screen-reader
+  // equivalent of "the numbers on the map" (QA §15.K).
   const visibleRanked = useMemo<PinFeature[]>(() => {
     const visible = pinList.filter((f) => !hiddenIds.has(f.properties.id));
     return visible.map((f, i) => ({ ...f, properties: { ...f.properties, rank: i + 1 } }));
   }, [pinList, hiddenIds]);
 
-  // The PROPERTIES LIST, unlike the map, keeps hidden rows in place (so
-  // toggling one back on doesn't require hunting through a separate section) —
-  // only their rank number and colour disappear, and every row after them
-  // compresses upward to fill the gap, same as the map's numbering.
+  // The IN-VIEW property list, numbered 1..N in EXACTLY the same order as the
+  // map's pins (built from the same pinList + hiddenIds as visibleRanked
+  // above) — never interleave anything else into this sequence, or its
+  // numbers stop matching what's drawn on the map.
   interface ListRow {
     feature: PinFeature;
     hidden: boolean;
@@ -350,6 +460,22 @@ export default function MapView() {
       { rows: [], visibleCount: 0 },
     ).rows;
   }, [pinList, hiddenIds]);
+  const visibleListCount = useMemo(() => listRows.filter((r) => !r.hidden).length, [listRows]);
+
+  // Starred properties that have panned OUT of the current view — shown in
+  // their OWN section with NO rank number (a number here would falsely imply
+  // it means the same thing as the map's "N on screen" ranking). Sorted by
+  // deal score purely so the list has a stable, meaningful order.
+  const starredElsewhere = useMemo<PinFeature[]>(() => {
+    const inFrame = new Set(pinList.map((f) => f.properties.id));
+    const out: PinFeature[] = [];
+    for (const id of starredIds) {
+      if (inFrame.has(id)) continue;
+      const cached = starredFeatures[id];
+      if (cached) out.push(cached);
+    }
+    return out.sort((a, b) => b.properties.dealScore - a.properties.dealScore);
+  }, [pinList, starredIds, starredFeatures]);
 
   const fetchPins = useCallback(async () => {
     const map = mapRef.current;
@@ -374,7 +500,30 @@ export default function MapView() {
       setScannedCapped(Boolean(fc.scannedCapped));
       // Already sorted best-to-worst by the API (rank ascending) — re-ranked
       // again after hidden-property filtering in the visibleRanked memo.
-      setPinList(fc.features as PinFeature[]);
+      const features = fc.features as PinFeature[];
+      setPinList(features);
+      // Refresh the cached snapshot of every CURRENTLY-IN-FRAME starred
+      // property with this fresh data — otherwise its cash flow/price/colour
+      // would keep showing whatever it was at star-time even after you
+      // change the target/budget/financing sliders (it only goes stale once
+      // it actually pans OUT of frame, which is the tradeoff the feature is
+      // for). Done here (data genuinely just arrived) rather than in an
+      // effect keyed on pinList, which would be a same-tick derived-state
+      // update better expressed as part of the fetch that produced it.
+      if (starredIdsRef.current.size > 0) {
+        setStarredFeatures((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const f of features) {
+            const id = f.properties.id;
+            if (starredIdsRef.current.has(id) && prev[id] !== f) {
+              next[id] = f;
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
     } finally {
       // Only the latest fetch owns the loading flag; a superseded one must not
       // flip it off while the newer request is still in flight.
@@ -435,12 +584,18 @@ export default function MapView() {
       // Allow the WebGL canvas to be captured in screenshots/exports (MapLibre v5
       // nests WebGL context attributes under canvasContextAttributes).
       canvasContextAttributes: { preserveDrawingBuffer: true },
+      // No default attribution control (the circled "i" toggle button reads as
+      // obvious map-API chrome) — a plain, non-interactive text credit is
+      // rendered instead (see the JSX below), since OSM/CARTO's free tiles
+      // still require SOME visible attribution even without their own button.
+      attributionControl: false,
     });
     mapRef.current = map;
     if (process.env.NODE_ENV !== "production") {
       (window as unknown as { __roiMap?: maplibregl.Map }).__roiMap = map;
     }
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    map.addControl(new CreditControl(), "bottom-right");
 
     map.on("load", () => {
       // A teardrop map-pin as an SDF image so a single shape can be tinted
@@ -465,8 +620,13 @@ export default function MapView() {
         clusterMaxZoom: 14,
         clusterRadius: 60,
         clusterProperties: {
+          // Average deal quality drives the cluster bubble colour + grade rank.
           sum_score: ["+", ["get", "dealScore"]],
-          sum_heat: ["+", ["get", "heatWeight"]],
+          // Separate good/bad mass so the heatmap can glow green where good
+          // deals concentrate and red where bad ones do (a single density field
+          // can't diverge). good = how far above the 0.5 midpoint, bad = below.
+          sum_good: ["+", ["*", 2, ["max", 0, ["-", ["get", "dealScore"], 0.5]]]],
+          sum_bad: ["+", ["*", 2, ["max", 0, ["-", 0.5, ["get", "dealScore"]]]]],
         },
       });
 
@@ -497,8 +657,6 @@ export default function MapView() {
             1, "#006837",
           ],
           "circle-opacity": 0.88,
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#ffffff",
         },
       });
       // The cluster's GRADE (A+…Z-) is an ordinal rank across the clusters in
@@ -528,39 +686,91 @@ export default function MapView() {
       map.on("mouseenter", "clusters-circle", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "clusters-circle", () => (map.getCanvas().style.cursor = ""));
 
-      // Heat layer (under the pins): a soft glow so density reads at a glance.
-      // Kept secondary and toggleable — the numbered pins are the primary UI.
+      // DEAL-QUALITY heatmap: TWO overlaid layers so the overlay can diverge —
+      // green where good-deal homes concentrate, red where bad ones do — which a
+      // single density field can't express. Each is weighted by how good/bad the
+      // points are (clusters use the aggregated sum_good / sum_bad). Only shown
+      // when >=4 homes are in frame (see the idle handler's heat gating), so a
+      // lone pin never glows. Fades out as you zoom in to individual pins.
+      const HEAT = (id: string, weight: maplibregl.ExpressionSpecification, ramp: [number, string][]) =>
+        ({
+          id,
+          type: "heatmap" as const,
+          source: "pins",
+          maxzoom: 14,
+          paint: {
+            "heatmap-weight": weight,
+            "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 1, 14, 2.4],
+            "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 34, 14, 70],
+            "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.6, 12, 0.4, 14, 0],
+            "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], ...ramp.flat()],
+          },
+        }) as maplibregl.HeatmapLayerSpecification;
+      const goodWeight: maplibregl.ExpressionSpecification = [
+        "case",
+        ["has", "point_count"],
+        ["get", "sum_good"],
+        ["*", 2, ["max", 0, ["-", ["get", "dealScore"], 0.5]]],
+      ];
+      const badWeight: maplibregl.ExpressionSpecification = [
+        "case",
+        ["has", "point_count"],
+        ["get", "sum_bad"],
+        ["*", 2, ["max", 0, ["-", 0.5, ["get", "dealScore"]]]],
+      ];
+      map.addLayer(
+        HEAT("pins-heat-bad", badWeight, [
+          [0, "rgba(0,0,0,0)"],
+          [0.3, "rgba(215,48,39,0.25)"],
+          [0.6, "rgba(215,48,39,0.5)"],
+          [1, "rgba(165,0,38,0.72)"],
+        ]),
+      );
+      map.addLayer(
+        HEAT("pins-heat-good", goodWeight, [
+          [0, "rgba(0,0,0,0)"],
+          [0.3, "rgba(26,152,80,0.25)"],
+          [0.6, "rgba(26,152,80,0.5)"],
+          [1, "rgba(0,104,55,0.75)"],
+        ]),
+      );
+
+      // Soft drop shadow: the same teardrop, tinted translucent black and
+      // nudged down-right, drawn UNDER the coloured pin so it reads as a
+      // shadow lifting the pin off the map (replaces the old white outline).
+      // NOTE: deliberately NO icon-halo here — the source texture (makePinImage)
+      // has no transparent padding around the shape, so a halo/blur has nowhere
+      // to fade before hitting the texture edge, which showed up as a faint
+      // rectangle under the pin. Plain translucent offset icon avoids that.
+      const PIN_SIZE: maplibregl.ExpressionSpecification = [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        8, 0.29,
+        12, 0.39,
+        16, 0.49,
+      ];
       map.addLayer({
-        id: "pins-heat",
-        type: "heatmap",
+        id: "pins-shadow",
+        type: "symbol",
         source: "pins",
-        maxzoom: 13,
+        filter: ["!", ["has", "point_count"]],
+        layout: {
+          "icon-image": "roi-pin",
+          "icon-anchor": "bottom",
+          "icon-size": PIN_SIZE,
+          "icon-offset": [3, 3], // down-right, in unscaled icon px
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
         paint: {
-          // Clustered points carry the aggregated sum_heat, not heatWeight
-          // (clusterProperties only computes what we ask it to) — fall back
-          // to it so the glow doesn't blank out at low zoom once clustering
-          // kicks in.
-          "heatmap-weight": ["case", ["has", "point_count"], ["get", "sum_heat"], ["get", "heatWeight"]],
-          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 1, 13, 2.2],
-          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 18, 13, 34],
-          "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.55, 11, 0.4, 13, 0],
-          "heatmap-color": [
-            "interpolate",
-            ["linear"],
-            ["heatmap-density"],
-            0, "rgba(0,0,0,0)",
-            0.2, "rgba(215,48,39,0.5)",
-            0.5, "rgba(254,224,139,0.7)",
-            0.8, "rgba(26,152,80,0.85)",
-            1, "rgba(0,104,55,0.95)",
-          ],
+          "icon-color": "rgba(0,0,0,0.28)",
         },
       });
-
       // Teardrop map-pin per property, tip anchored on the coordinate, tinted
       // by the SAME deal-quality colour as the ranked list bubbles (rank 1 =
-      // greenest, higher ranks steer toward red). A white halo lifts it off the
-      // basemap. Only unclustered points draw here (clusters own the rest).
+      // greenest, higher ranks steer toward red). Only unclustered points draw
+      // here (clusters own the rest).
       map.addLayer({
         id: "pins-symbol",
         type: "symbol",
@@ -569,15 +779,15 @@ export default function MapView() {
         layout: {
           "icon-image": "roi-pin",
           "icon-anchor": "bottom",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 8, 0.42, 12, 0.55, 16, 0.7],
+          "icon-size": PIN_SIZE,
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
         paint: {
           "icon-color": ["get", "color"],
-          "icon-opacity": ["case", ["get", "deEmphasize"], 0.7, 1],
-          "icon-halo-color": "#ffffff",
-          "icon-halo-width": 1.6,
+          // ~20% fainter than a fully opaque pin, and fainter still when
+          // already de-emphasised for a data-quality reason.
+          "icon-opacity": ["case", ["get", "deEmphasize"], 0.45, 0.8],
         },
       });
       // Rank number, sitting in the pin's HEAD (offset up from the tip/coord).
@@ -590,11 +800,20 @@ export default function MapView() {
         filter: ["!", ["has", "point_count"]],
         layout: {
           "text-field": ["to-string", ["get", "rank"]],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 16, 13],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 8, 8, 16, 10],
           "text-font": ["Open Sans Bold"],
-          "text-anchor": "bottom",
-          // Lift the number off the coordinate into the round head of the pin.
-          "text-offset": ["interpolate", ["linear"], ["zoom"], 8, ["literal", [0, -1.6]], 16, ["literal", [0, -2.4]]],
+          // "center" (NOT "bottom") — with text-anchor:"bottom" the text's
+          // BOTTOM edge sits at the offset point and the glyph extends upward
+          // from there, so the visible number ends up well above wherever the
+          // offset targets. "center" puts the glyph's own center exactly at
+          // the offset point, matching the formula below directly.
+          "text-anchor": "center",
+          // Lift the number off the coordinate (the tip) into the pin's round
+          // head — offset is in ems of text-size, so it's recomputed here
+          // whenever PIN_SIZE or this layer's text-size changes: the head's
+          // centre sits 60% of the way up the pin from the tip, i.e.
+          // -(0.6 * 60 * iconSize) / textSize ems at each zoom stop.
+          "text-offset": ["interpolate", ["linear"], ["zoom"], 8, ["literal", [0, -1.3]], 16, ["literal", [0, -1.8]]],
           "text-allow-overlap": true,
           "text-ignore-placement": true,
         },
@@ -617,13 +836,15 @@ export default function MapView() {
           "text-allow-overlap": true,
           "text-ignore-placement": true,
         },
-        paint: { "text-color": "#6b7280", "text-halo-color": "#ffffff", "text-halo-width": 1.4 },
+        paint: { "text-color": "#6b7280", "text-halo-color": "#ffffff", "text-halo-width": 0.7 },
       });
 
-      // Keep the heat glow UNDER everything — it's added after the cluster
-      // layers above, so drop it below them (and below the pins) or its
-      // semi-transparent blobs wash out the cluster grades at low zoom.
-      map.moveLayer("pins-heat", "clusters-circle");
+      // Heat glow sits ABOVE the cluster bubbles but UNDER the individual pins
+      // (moved to just before pins-shadow, i.e. right after clusters-circle) —
+      // the ordinal grade letters are separate DOM markers, always on top
+      // regardless of this GL layer order, so they stay legible either way.
+      map.moveLayer("pins-heat-bad", "pins-shadow");
+      map.moveLayer("pins-heat-good", "pins-shadow");
 
       // Ordinal cluster grades (A+…Z-) as HTML markers over the bubbles. Rank
       // every cluster currently in view by average deal quality and label the
@@ -636,16 +857,27 @@ export default function MapView() {
         for (const mk of clusterGradeMarkersRef.current) mk.remove();
         clusterGradeMarkersRef.current = [];
       };
+      // Show the heat layers only when the checkbox is on AND >=4 homes are in
+      // frame — a heatmap over one or two homes is noise. Called from the idle
+      // handler (recomputes the count) and from the checkbox effect.
+      const HEAT_LAYERS = ["pins-heat-good", "pins-heat-bad"];
+      const applyHeat = () => {
+        const vis = showHeatRef.current && heatEligibleRef.current ? "visible" : "none";
+        for (const id of HEAT_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis);
+      };
+      applyHeatRef.current = applyHeat;
       const rebuildClusterGrades = () => {
         clearClusterGrades();
         if (!map.getLayer("clusters-circle")) return;
         const raw = map.querySourceFeatures("pins", { filter: ["has", "point_count"] });
         // Dedupe by cluster_id (a cluster can appear in several loaded tiles).
         const byId = new Map<number, { avg: number; coords: [number, number] }>();
+        let homesInClusters = 0;
         for (const f of raw) {
           const id = f.properties?.cluster_id as number | undefined;
           if (id == null || byId.has(id) || f.geometry.type !== "Point") continue;
           const count = Number(f.properties?.point_count) || 1;
+          homesInClusters += count;
           const avg = Number(f.properties?.sum_score ?? 0) / count;
           byId.set(id, { avg, coords: f.geometry.coordinates as [number, number] });
         }
@@ -661,6 +893,15 @@ export default function MapView() {
           const mk = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat(ranked[i].coords).addTo(map);
           clusterGradeMarkersRef.current.push(mk);
         }
+        // Total homes in frame = those inside clusters + unclustered singles.
+        const singles = new Set(
+          map
+            .querySourceFeatures("pins", { filter: ["!", ["has", "point_count"]] })
+            .map((f) => f.properties?.id as string | undefined)
+            .filter(Boolean),
+        );
+        heatEligibleRef.current = homesInClusters + singles.size >= 4;
+        applyHeat();
       };
       map.on("zoomstart", clearClusterGrades);
       map.on("idle", rebuildClusterGrades);
@@ -682,7 +923,7 @@ export default function MapView() {
         if (!f || !f.properties || f.geometry.type !== "Point") return;
         previewPopup
           .setLngLat(f.geometry.coordinates as [number, number])
-          .setHTML(buildPreviewHtml(f.properties, darkModeRef.current))
+          .setHTML(buildPreviewHtml(f.properties, darkModeRef.current, filtersRef.current.basis))
           .addTo(map);
       };
       const hidePreview = () => previewPopup.remove();
@@ -719,6 +960,10 @@ export default function MapView() {
           deEmphasize: bool(p.deEmphasize),
           hoaMissing: bool(p.hoaMissing),
           rank: Number(p.rank),
+          // Not read from the map feature (MapLibre stringifies nested arrays);
+          // the detail card doesn't use it, and the list reads the real array
+          // straight from React state.
+          priceHistory: null,
         });
       };
 
@@ -764,6 +1009,42 @@ export default function MapView() {
     previewPopupRef.current?.remove();
   }, [visibleRanked]);
 
+  // Keep a yellow star marker on the map for every starred property that has
+  // panned OUT of the current fetch — a property still in frame already has
+  // its own numbered pin, so the separate star marker steps aside for it
+  // (removed here) rather than doubling up at the same coordinate.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const inFrame = new Set(pinList.map((f) => f.properties.id));
+    for (const [id, mk] of Object.entries(starMarkersRef.current)) {
+      if (!starredIds.has(id) || inFrame.has(id)) {
+        mk.remove();
+        delete starMarkersRef.current[id];
+      }
+    }
+    for (const id of starredIds) {
+      if (inFrame.has(id) || starMarkersRef.current[id]) continue;
+      const f = starredFeatures[id];
+      if (!f) continue;
+      const el = document.createElement("div");
+      el.textContent = "★";
+      el.style.cssText =
+        "font-size:20px;line-height:1;color:#eab308;text-shadow:0 1px 2px rgba(0,0,0,0.55);pointer-events:none;";
+      const mk = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat(f.geometry.coordinates).addTo(map);
+      starMarkersRef.current[id] = mk;
+    }
+  }, [starredIds, pinList, starredFeatures]);
+
+  // Unmount-only cleanup for the star markers (a separate effect so the
+  // teardown doesn't fire on every starredIds/pinList change above).
+  useEffect(() => {
+    return () => {
+      for (const mk of Object.values(starMarkersRef.current)) mk.remove();
+      starMarkersRef.current = {};
+    };
+  }, []);
+
   // Refetch when filters change — debounced so typing/sliding doesn't spam the API.
   useEffect(() => {
     if (!mapRef.current?.isStyleLoaded()) return;
@@ -771,12 +1052,12 @@ export default function MapView() {
     return () => clearTimeout(id);
   }, [filters, fetchPins]);
 
-  // Toggle the heat layer without refetching.
+  // Toggle the heat layers without refetching. Actual visibility also depends on
+  // the in-frame home count (>=4), which the idle handler owns — so mirror the
+  // checkbox into the ref and let the shared applyHeat decide.
   useEffect(() => {
-    const map = mapRef.current;
-    if (map?.getLayer("pins-heat")) {
-      map.setLayoutProperty("pins-heat", "visibility", showHeat ? "visible" : "none");
-    }
+    showHeatRef.current = showHeat;
+    applyHeatRef.current();
   }, [showHeat]);
 
   // Toggle the rank-number badge on each pin (the "1 best ... N worst" rating).
@@ -788,7 +1069,7 @@ export default function MapView() {
   }, [showRank]);
 
   // Toggle clustering on the source itself. setClusterOptions preserves the
-  // clusterProperties (sum_score/sum_heat) set at creation and re-clusters the
+  // clusterProperties (sum_score/sum_good/sum_bad) set at creation and re-clusters the
   // data already in the source — so turning it OFF shows every property as its
   // own teardrop (no point_count ⇒ cluster layers empty, individual layers draw
   // everything), and turning it back ON regrades the clusters. Guarded against
@@ -839,10 +1120,25 @@ export default function MapView() {
     <div className={`relative h-screen w-screen overflow-hidden ${darkMode ? "dark" : ""}`}>
       <div ref={mapContainer} className="h-full w-full" />
 
+      {/* Map credit — OSM/CARTO's free tiles require attribution even with no
+          attribution CONTROL button (see the map-init effect); both require an
+          actual link where practical, not just visible text, so these ARE real
+          anchors (deliberately not pointer-events-none). */}
+      <div className="absolute bottom-1 right-1 z-10 text-[9px] text-gray-500/70 dark:text-gray-400/60">
+        ©{" "}
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="hover:underline">
+          OpenStreetMap
+        </a>{" "}
+        ·{" "}
+        <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer" className="hover:underline">
+          CARTO
+        </a>
+      </div>
+
       {/* Controls */}
-      <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur dark:bg-gray-900/90 dark:shadow-black/40">
+      <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/75 p-4 shadow-lg backdrop-blur dark:bg-gray-900/70 dark:shadow-black/40">
         <div className="flex items-start justify-between gap-2">
-          <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">ROI Guide</h1>
+          <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">LA ROI Guide</h1>
           <button
             type="button"
             onClick={() => setDarkMode((d) => !d)}
@@ -854,8 +1150,8 @@ export default function MapView() {
           </button>
         </div>
         <p className="mt-0.5 text-[11px] leading-tight text-gray-500 dark:text-gray-400">
-          Set the monthly profit you want — pins are active listings that clear it, colored by how far.
-          Coverage: Greater Los Angeles — the coast, the city, the San Fernando Valley, out to the Inland Empire.
+          Set the monthly number you want. Pins are active listings that clear it, colored by how far.
+          Coverage: Greater Los Angeles (the coast, the city, the San Fernando Valley, out to the Inland Empire).
         </p>
         <p className="mt-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           {loading
@@ -866,25 +1162,53 @@ export default function MapView() {
         </p>
         {!loading && scannedCapped && (
           <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
-            This view is dense — zoom in to see everything on screen.
+            This view is dense. Zoom in to see everything on screen.
           </p>
         )}
         {!loading && count === 0 && scanned === 0 && (
           <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
-            No coverage in this view yet — we cover Greater Los Angeles, from the coast out to the Inland Empire. Pan or zoom out.
+            No coverage in this view yet. We cover Greater Los Angeles, from the coast out to the Inland Empire. Pan or zoom out.
           </p>
         )}
         {!loading && count === 0 && scanned != null && scanned > 0 && (
           <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-tight text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-            {scanned} active listing{scanned === 1 ? "" : "s"} here, but none clear +${filters.target.toLocaleString()}/mo
-            {filters.allCash ? "" : ` with ${Math.round(filters.downPaymentPct * 100)}% down @ ${filters.annualRatePct}%`}. Lower
-            your target{filters.allCash ? "" : " or try All-cash"}.
+            {filters.basis === "revenue"
+              ? `${scanned} active listing${scanned === 1 ? "" : "s"} here, but none reach $${filters.target.toLocaleString()}/mo rent in your price range. Widen your budget or lower your target.`
+              : `${scanned} active listing${scanned === 1 ? "" : "s"} here, but none clear $${filters.target.toLocaleString()}/mo cash flow${
+                  filters.allCash ? "" : ` with ${Math.round(filters.downPaymentPct * 100)}% down @ ${filters.annualRatePct}%`
+                } in your price range. Widen your budget or lower your target${filters.allCash ? "" : ", or try All-cash"}.`}
           </p>
         )}
 
-        <label className="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">
-          Min monthly cash flow (target)
+        <div className="mt-3">
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="roi-target" className="text-xs font-medium text-gray-700 dark:text-gray-300">
+              Min monthly {filters.basis === "revenue" ? "rent" : "cash flow"}
+            </label>
+            <div
+              className="flex overflow-hidden rounded-md border border-gray-300 text-[10px] font-medium dark:border-gray-600"
+              role="group"
+              aria-label="Show profit or revenue"
+            >
+              {(["profit", "revenue"] as const).map((b) => (
+                <button
+                  key={b}
+                  type="button"
+                  aria-pressed={filters.basis === b}
+                  onClick={() => setFilters((f) => ({ ...f, basis: b }))}
+                  className={`px-2 py-0.5 capitalize ${
+                    filters.basis === b
+                      ? "bg-green-600 text-white"
+                      : "bg-transparent text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  {b}
+                </button>
+              ))}
+            </div>
+          </div>
           <input
+            id="roi-target"
             type="number"
             value={filters.target}
             min={1}
@@ -892,23 +1216,45 @@ export default function MapView() {
             onChange={(e) => setFilters((f) => ({ ...f, target: Math.max(1, Number(e.target.value) || 1) }))}
             className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
-        </label>
+          <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+            {filters.basis === "revenue"
+              ? "Gross monthly rent, before any expenses."
+              : "Net, after vacancy, management, maintenance/CapEx, mortgage P&I, property tax (estimated), insurance (estimated), and HOA."}
+          </p>
+        </div>
 
-        <label className="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">
-          Max budget (optional)
-          <input
-            type="number"
-            value={filters.budget ?? ""}
-            min={0}
-            step={10000}
-            placeholder="no ceiling"
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setFilters((f) => ({ ...f, budget: e.target.value === "" || !(v > 0) ? null : v }));
-            }}
-            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-          />
-        </label>
+        <fieldset className="mt-3">
+          <legend className="text-xs font-medium text-gray-700 dark:text-gray-300">Budget (price range)</legend>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="number"
+              aria-label="Minimum price"
+              value={filters.budgetMin ?? ""}
+              min={0}
+              step={10000}
+              placeholder="no min"
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setFilters((f) => ({ ...f, budgetMin: e.target.value === "" || !(v > 0) ? null : v }));
+              }}
+              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            />
+            <span className="text-xs text-gray-400 dark:text-gray-500">to</span>
+            <input
+              type="number"
+              aria-label="Maximum price"
+              value={filters.budgetMax ?? ""}
+              min={0}
+              step={10000}
+              placeholder="no max"
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setFilters((f) => ({ ...f, budgetMax: e.target.value === "" || !(v > 0) ? null : v }));
+              }}
+              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            />
+          </div>
+        </fieldset>
 
         <label className="mt-3 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
@@ -926,8 +1272,8 @@ export default function MapView() {
             checked={filters.houseOnly}
             onChange={(e) => setFilters((f) => ({ ...f, houseOnly: e.target.checked }))}
           />
-          House only
-          <span className="text-gray-400 dark:text-gray-500">(no condo/apt/manufactured, no HOA)</span>
+          House
+          <span className="text-gray-400 dark:text-gray-500">(no: HOA/condo/apt/manufactured)</span>
         </label>
 
         <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -1046,7 +1392,7 @@ export default function MapView() {
           </div>
           <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
             Green = high return for the price <em>and</em> a bargain vs nearby homes. Pins are numbered 1 (best) to N
-            (worst) among what&apos;s on screen — it re-ranks as you pan or zoom. Hover a pin for a quick peek; click
+            (worst) among what&apos;s on screen; it re-ranks as you pan or zoom. Hover a pin for a quick peek, then click
             to open its listing.
           </p>
         </div>
@@ -1061,8 +1407,9 @@ export default function MapView() {
           className="mt-3 flex w-full items-center justify-between border-t border-gray-200 pt-2 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300"
         >
           <span>
-            Properties ({visibleRanked.length}
-            {hiddenIds.size > 0 ? ` · ${hiddenIds.size} hidden` : ""})
+            Properties ({visibleListCount}
+            {hiddenIds.size > 0 ? ` · ${hiddenIds.size} hidden` : ""}
+            {starredElsewhere.length > 0 ? ` · ${starredElsewhere.length} starred elsewhere` : ""})
           </span>
           <span
             className={`inline-block text-[10px] transition-transform ${listExpanded ? "rotate-180" : ""}`}
@@ -1076,8 +1423,12 @@ export default function MapView() {
             id="roi-property-list"
             className="mt-2 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700"
           >
-            {listRows.length === 0 ? (
+            {listRows.length === 0 && starredElsewhere.length === 0 ? (
               <p className="p-2 text-[11px] text-gray-400 dark:text-gray-500">No properties in the current view.</p>
+            ) : listRows.length === 0 ? (
+              <p className="p-2 text-[11px] text-gray-400 dark:text-gray-500">
+                No properties in the current view — see your starred properties below.
+              </p>
             ) : (
               <ul className="divide-y divide-gray-100 dark:divide-gray-800">
                 {listRows.map(({ feature: f, hidden, displayRank }) => (
@@ -1099,7 +1450,9 @@ export default function MapView() {
                       <button
                         type="button"
                         onClick={() => selectAndFlyTo(f)}
-                        aria-label={`Rank ${displayRank}: ${f.properties.address}, ${money(f.properties.cashFlow)} per month, ${money(f.properties.price)}`}
+                        aria-label={`Rank ${displayRank}: ${f.properties.address}, ${money(
+                          filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow,
+                        )} per month ${filters.basis === "revenue" ? "rent" : "cash flow"}, priced ${money(f.properties.price)}`}
                         className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
                       >
                         <span
@@ -1114,23 +1467,103 @@ export default function MapView() {
                             {f.properties.address}
                           </span>
                           <span className="block text-[10px] text-gray-500 dark:text-gray-400">
-                            {money(f.properties.cashFlow)}/mo · {money(f.properties.price)}
+                            {money(filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow)}/mo · {money(f.properties.price)}
                           </span>
                         </span>
+                        {/* Minimal price-history line (Zestimate-style), in the
+                            trailing gap after the price. Null until backfilled. */}
+                        <Sparkline points={(f.properties.priceHistory ?? []).map((h) => h.price)} />
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => toggleHidden(f.properties.id)}
-                      aria-label={hidden ? `Show ${f.properties.address} on the map` : `Hide ${f.properties.address} from the map`}
-                      title={hidden ? "Show on map" : "Hide from map"}
-                      className="shrink-0 px-2 py-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                    >
-                      {hidden ? <EyeOffIcon className="h-3.5 w-3.5" /> : <EyeIcon className="h-3.5 w-3.5" />}
-                    </button>
+                    <span className="flex shrink-0 flex-col items-center">
+                      <button
+                        type="button"
+                        onClick={() => toggleHidden(f.properties.id)}
+                        aria-label={hidden ? `Show ${f.properties.address} on the map` : `Hide ${f.properties.address} from the map`}
+                        title={hidden ? "Show on map" : "Hide from map"}
+                        className="px-2 py-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                      >
+                        {hidden ? <EyeOffIcon className="h-[10.5px] w-[10.5px]" /> : <EyeIcon className="h-[10.5px] w-[10.5px]" />}
+                      </button>
+                      {/* Starring keeps a home in this list (and marked on the
+                          map) even after you pan elsewhere, so you can compare
+                          it against homes elsewhere. Not available while
+                          hidden — hiding already un-stars it (see toggleHidden). */}
+                      {!hidden && (
+                        <button
+                          type="button"
+                          onClick={() => toggleStar(f)}
+                          aria-label={
+                            starredIds.has(f.properties.id)
+                              ? `Unstar ${f.properties.address}`
+                              : `Star ${f.properties.address} to keep comparing it`
+                          }
+                          aria-pressed={starredIds.has(f.properties.id)}
+                          title={starredIds.has(f.properties.id) ? "Unstar" : "Star to compare"}
+                          className="px-2 py-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        >
+                          {starredIds.has(f.properties.id) ? (
+                            <StarIcon className="h-[10.5px] w-[10.5px] text-yellow-500" filled />
+                          ) : (
+                            <StarIcon className="h-[10.5px] w-[10.5px]" />
+                          )}
+                        </button>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>
+            )}
+            {/* Starred properties currently OUT of frame — deliberately NOT
+                numbered (a rank here would falsely claim to mean the same
+                thing as "N on screen") and clearly labelled, so this section
+                can never be mistaken for contradicting the "no coverage in
+                this view" message above. */}
+            {starredElsewhere.length > 0 && (
+              <div className="border-t border-gray-200 dark:border-gray-700">
+                <p className="px-2 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                  Starred, not in current view
+                </p>
+                <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {starredElsewhere.map((f) => (
+                    <li key={f.properties.id} className="flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => selectAndFlyTo(f)}
+                        aria-label={`Starred, not in current view: ${f.properties.address}, ${money(
+                          filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow,
+                        )} per month ${filters.basis === "revenue" ? "rent" : "cash flow"}, priced ${money(f.properties.price)}. Click to fly there.`}
+                        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        <span
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                          style={{ background: f.properties.color }}
+                          aria-hidden="true"
+                        >
+                          <StarIcon className="h-3 w-3" filled />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11px] text-gray-800 dark:text-gray-200">
+                            {f.properties.address}
+                          </span>
+                          <span className="block text-[10px] text-gray-500 dark:text-gray-400">
+                            {money(filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow)}/mo · {money(f.properties.price)}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleStar(f)}
+                        aria-label={`Unstar ${f.properties.address}`}
+                        title="Unstar"
+                        className="shrink-0 px-2 py-1 text-yellow-500 hover:text-yellow-600"
+                      >
+                        <StarIcon className="h-[10.5px] w-[10.5px]" filled />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
         )}
@@ -1175,6 +1608,60 @@ function EyeOffIcon({ className }: { className?: string }) {
         strokeLinejoin="round"
         d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.774 3.162 10.066 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243"
       />
+    </svg>
+  );
+}
+
+function StarIcon({ className, filled }: { className?: string; filled?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={filled ? 0 : 1.75}
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 2.75l2.94 5.96 6.58.96-4.76 4.64 1.12 6.55L12 17.77l-5.88 3.09 1.12-6.55-4.76-4.64 6.58-.96L12 2.75z"
+      />
+    </svg>
+  );
+}
+
+/**
+ * A minimal price-history line (no axes, no fill) for a list row — the shape of
+ * the trend at a glance. Green if the latest price is at or above the first,
+ * red if it has come down. Nothing renders with fewer than two points.
+ */
+function Sparkline({ points }: { points: number[] }) {
+  if (!points || points.length < 2) return null;
+  const w = 46;
+  const h = 16;
+  const pad = 1.5;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = max - min || 1;
+  const step = (w - 2 * pad) / (points.length - 1);
+  const coords = points.map((p, i) => {
+    const x = pad + i * step;
+    const y = pad + (h - 2 * pad) * (1 - (p - min) / range);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const dropped = points[points.length - 1] < points[0];
+  const stroke = dropped ? "#dc2626" : "#16a34a";
+  return (
+    <svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      className="shrink-0 opacity-80"
+      aria-hidden="true"
+      preserveAspectRatio="none"
+    >
+      <polyline points={coords.join(" ")} fill="none" stroke={stroke} strokeWidth={1.25} strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }

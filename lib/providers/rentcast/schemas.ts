@@ -102,6 +102,11 @@ export const SaleListingSchema = z
     hoa: HoaSchema.nullish(),
     listingAgent: ListingContactSchema.nullish(),
     listingOffice: ListingContactSchema.nullish(),
+    // RentCast returns prior list/sale events keyed by date, each with a price
+    // — the source for the price-history sparkline (see mapRentcast.extractPriceHistory).
+    history: z
+      .record(z.string(), z.object({ event: z.string().optional(), price: z.number().optional() }).catchall(z.unknown()))
+      .nullish(),
   })
   .catchall(z.unknown());
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toScreenableListing, pickBedroomMedianRent } from "./mapRentcast";
+import { toScreenableListing, pickBedroomMedianRent, extractPriceHistory } from "./mapRentcast";
 import type { SaleListing, RentalMarket } from "@/lib/providers/rentcast";
 
 function listing(over: Partial<SaleListing> = {}): SaleListing {
@@ -70,5 +70,39 @@ describe("toScreenableListing", () => {
   it("marks non-active statuses as not active", () => {
     const now = new Date("2026-07-07T00:00:00Z");
     expect(toScreenableListing(listing({ status: "Sold" }), now).isActive).toBe(false);
+  });
+});
+
+describe("extractPriceHistory", () => {
+  it("flattens date-keyed history oldest→newest and appends the current price", () => {
+    const h = extractPriceHistory(
+      listing({
+        price: 674_000,
+        history: {
+          "2024-04-05": { event: "Sale Listing", price: 655_000 },
+          "2025-07-07": { event: "Sale Listing", price: 615_000 },
+        },
+      }),
+    );
+    expect(h?.map((p) => p.price)).toEqual([655_000, 615_000, 674_000]);
+  });
+
+  it("collapses consecutive identical prices (history already ends at current price)", () => {
+    const h = extractPriceHistory(
+      listing({ price: 500_000, history: { "2024-01-01": { price: 500_000 } } }),
+    );
+    expect(h?.map((p) => p.price)).toEqual([500_000]);
+  });
+
+  it("returns null when there is no usable history and no valid price to seed one", () => {
+    expect(extractPriceHistory(listing({ price: 0, history: {} }))).toBeNull();
+    expect(extractPriceHistory(listing({ price: 0 }))).toBeNull();
+  });
+
+  it("ignores entries without a positive price", () => {
+    const h = extractPriceHistory(
+      listing({ price: 400_000, history: { "2023-01-01": { event: "Listing Removed" } } }),
+    );
+    expect(h?.map((p) => p.price)).toEqual([400_000]);
   });
 });

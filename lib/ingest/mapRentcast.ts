@@ -32,6 +32,39 @@ export function toScreenableListing(listing: SaleListing, now: Date): Screenable
   };
 }
 
+/** One point on the price-history sparkline. */
+export interface PricePoint {
+  date: string;
+  price: number;
+}
+
+/**
+ * Flatten RentCast's date-keyed listing `history` into a compact, oldest→newest
+ * price series for the sparkline. Keeps only entries with a positive price,
+ * de-dupes identical consecutive prices, and always appends the CURRENT list
+ * price as the latest point so the line ends at what the map shows. Returns
+ * null when there isn't at least one point (nothing to draw).
+ */
+export function extractPriceHistory(listing: SaleListing): PricePoint[] | null {
+  const points: PricePoint[] = [];
+  const hist = listing.history ?? {};
+  for (const [date, entry] of Object.entries(hist)) {
+    const price = entry?.price;
+    if (typeof price === "number" && price > 0) points.push({ date, price });
+  }
+  points.sort((a, b) => a.date.localeCompare(b.date));
+  // Ensure the newest point is the current list price (history may lag).
+  if (typeof listing.price === "number" && listing.price > 0) {
+    const last = points[points.length - 1];
+    if (!last || last.price !== listing.price) {
+      points.push({ date: listing.lastSeenDate ?? listing.listedDate ?? "current", price: listing.price });
+    }
+  }
+  // Collapse runs of identical prices to keep the line honest and minimal.
+  const deduped = points.filter((p, i) => i === 0 || p.price !== points[i - 1].price);
+  return deduped.length > 0 ? deduped : null;
+}
+
 export interface RentPick {
   /** Chosen monthly rent basis, or null if the market has no usable figure. */
   rent: number | null;

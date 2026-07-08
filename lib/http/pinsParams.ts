@@ -40,8 +40,9 @@ export const PinsParamsSchema = z
       return { minLng, minLat, maxLng, maxLat };
     }),
     target: z.coerce.number().finite().positive(),
-    budget: z.coerce.number().finite().positive().optional(),
-    mode: z.enum(["budget_return", "return_only"]).optional(),
+    budgetMin: z.coerce.number().finite().positive().optional(),
+    budgetMax: z.coerce.number().finite().positive().optional(),
+    basis: z.enum(["profit", "revenue"]).default("profit"),
     palette: z.enum(["rdylgn", "viridis"]).default("rdylgn"),
     direction: z.enum(["higher-is-better", "higher-is-worse"]).default("higher-is-better"),
     limit: z.coerce.number().int().min(1).max(5000).default(2000),
@@ -66,11 +67,9 @@ export const PinsParamsSchema = z
   .transform((v) => ({
     bbox: v.bbox,
     target: v.target,
-    budget: v.budget ?? null,
-    // Always DERIVED from budget presence — an explicit ?mode= that disagrees
-    // with whether a budget was actually given would otherwise silently win,
-    // e.g. mode=budget_return with no budget behaving like an unlimited budget.
-    mode: v.budget != null ? ("budget_return" as const) : ("return_only" as const),
+    budgetMin: v.budgetMin ?? null,
+    budgetMax: v.budgetMax ?? null,
+    basis: v.basis,
     limit: v.limit,
     houseOnly: v.houseOnly,
     gradient: {
@@ -96,8 +95,9 @@ export type PinsParams = z.infer<typeof PinsParamsSchema>;
 const keys = [
   "bbox",
   "target",
-  "budget",
-  "mode",
+  "budgetMin",
+  "budgetMax",
+  "basis",
   "palette",
   "direction",
   "limit",

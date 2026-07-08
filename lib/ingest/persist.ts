@@ -16,6 +16,7 @@ import { properties, listings, computedRoi, marketSnapshots } from "@/db/schema"
 import type { Database } from "@/db/client";
 import type { SaleListing, RentalMarket } from "@/lib/providers/rentcast";
 import type { ComputedRoiRecord } from "./compute";
+import { extractPriceHistory } from "./mapRentcast";
 
 const numOrNull = (n: number | null | undefined): string | null => (n == null ? null : String(n));
 
@@ -65,6 +66,7 @@ export async function upsertListing(
 ): Promise<string> {
   const isActive = normalizeToken(l.status) === "active";
   const listedDate = l.listedDate ? l.listedDate.slice(0, 10) : null;
+  const priceHistory = extractPriceHistory(l);
   const [row] = await db
     .insert(listings)
     .values({
@@ -74,6 +76,7 @@ export async function upsertListing(
       listingType: l.listingType ?? null,
       price: String(l.price),
       hoaFee: numOrNull(l.hoa?.fee),
+      priceHistory,
       listedDate,
       firstSeen: now,
       lastSeen: now,
@@ -87,6 +90,7 @@ export async function upsertListing(
         listingType: l.listingType ?? null,
         price: String(l.price),
         hoaFee: numOrNull(l.hoa?.fee),
+        priceHistory,
         lastSeen: now, // firstSeen is intentionally NOT touched on update
         isActive,
         // Clear any stale removed_date a prior deactivation set — otherwise a

@@ -655,3 +655,139 @@ real ones, all fixed):
   `20*scale` puts the tip exactly on the bottom edge (and the coordinate).
 - **[LOW] reactivation left a stale `removed_date`** — `upsertListing` now
   clears it when a listing comes back active.
+
+---
+
+## 2026-07-08 (later) — Map/UX batch: shadow pins, deal-quality heatmap, budget range, profit/revenue, price-history sparkline
+
+Eight owner-requested changes, all live-verified and adversarially reviewed (a
+3-dimension workflow: backend / frontend-MapLibre / data-integrity, each finding
+refuted independently — 5 confirmed low/med issues fixed below, the rest
+rejected as intentional).
+
+1. **Pin drop-shadow, not a white outline.** A second SDF teardrop layer
+   (`pins-shadow`, translucent black, `icon-offset [3,3]`, halo-blur) under
+   `pins-symbol`; the white `icon-halo` is gone. Reads as depth in day mode;
+   on the dark basemap the shadow is naturally invisible and the pin's colour
+   carries contrast (kept per the owner's explicit "shadow not outline").
+2. **Deal-quality heatmap, gated.** Replaced the single density-coloured glow
+   with TWO diverging heatmap layers — `pins-heat-good` (green) / `pins-heat-bad`
+   (red) — weighted by how far each point sits above/below dealScore 0.5 (clusters
+   aggregate `sum_good`/`sum_bad`). Only shown when the toggle is on AND **>=4
+   homes are in frame** (counted in the idle handler: homes-in-clusters +
+   unclustered singles), so a lone pin never glows. Both layers sit below the
+   clusters.
+3. Control panel **~20% more transparent** (`bg-white/95`→`/75`, dark `/90`→`/70`).
+4. House-only helper text → `(no: HOA/condo/apt/manufactured)`.
+5. **Budget is now a range** (min + max, default **$45k–$500k**). `Filters.budget`
+   → `budgetMin`/`budgetMax`; parsed in `pinsParams`; the range is applied in
+   `query.ts` **in JS, not SQL**, so `scanned` stays budget-independent (lets the
+   UI distinguish a real coverage gap from "nothing in your price range").
+6. **Profit / Revenue toggle.** `Filters.basis`: profit = net monthly cash flow
+   (the default), revenue = gross monthly rent. The target filters on the chosen
+   quantity; the label, fine print (lists every deduction), list value, aria
+   label, hover popup, and `band` all track the basis.
+7. **Em-dashes removed** from the control-panel copy.
+8. **Price-history sparkline.** RentCast already returns each listing's price
+   `history` in the sale payload — captured via `extractPriceHistory` into a new
+   `listings.price_history` jsonb (migration 0004), returned by the pins API, and
+   drawn as a minimal `<Sparkline>` line in each list row (>=2 points; green up /
+   red down). No synthetic data — the line is null (nothing drawn) until real
+   history exists. Backfilled the existing rows with two idempotent re-ingests
+   (westside 50mi + Inland Empire radius); ~281 active listings now have a
+   drawable multi-point history, the rest populate on the normal ingest cadence.
+
+**Review fixes applied before deploy:** revenue-mode empty-state no longer
+suggests financing/All-cash (gross rent is financing-independent) and now
+mentions the budget; the budget range applied in JS so a too-narrow/empty
+price band reads as "none in your price range", not a false "no coverage"; the
+hover popup switches to gross rent in revenue mode; `band` compares the
+basis-appropriate value against the target. Left as-is by design: no
+`budgetMin<=budgetMax` guard (an inverted range honestly returns nothing), and
+the shadow-over-outline trade in night mode (the owner's explicit choice).
+
+**Tests:** typecheck + lint clean; 190 pass / 3 skip offline, 190+ with DB
+(+4 `extractPriceHistory`, budget-range/basis param tests updated). All eight
+live-verified in the browser (incl. the Sherman Oaks 749k→395k sparkline and
+the profit↔revenue number switch).
+
+---
+
+## 2026-07-08 (later still) — Pin polish follow-ups, star feature, and a real rank-parity bug caught by review
+
+Further owner-requested tweaks on top of the map/UX batch above, each live-verified,
+plus a full adversarial re-review of the whole round before considering it done.
+
+**Quick fixes:** removed the faint square artifact under each pin (the SDF
+drop-shadow's `icon-halo-blur` had nowhere to fade before hitting the source
+texture's edge — since the texture has zero padding, removing the halo
+entirely was simpler and lower-risk than padding the canvas); rank number
+**centering root-cause fix**: `pins-label` used `text-anchor: "bottom"` (text's
+BOTTOM edge sits at the offset point, glyph extends upward from there) while
+the offset formula assumed `"center"` semantics (glyph's own center at the
+point) — verified the mismatch empirically with live `setLayoutProperty`
+experiments (not just re-deriving the formula) before fixing; changed anchor
+to `"center"`, kept the original formula unchanged. Cluster ring's white
+stroke removed. Cap-rate sub-label halo thinned 50%. Pin opacity −20%
+(1/0.7 → 0.8/0.45). "ROI Guide" → "LA ROI Guide" (title + `<h1>`). Eye/star
+icons −25% (14px → 10.5px). Attribution "i" toggle removed
+(`attributionControl:false`); OSM/CARTO credit shown as plain small text
+instead — **then corrected to real `<a>` links** after review flagged that
+CARTO/OSM's attribution terms expect an actual hyperlink, not just visible
+text. "made by ariya" credit → a real MapLibre `IControl` (not an
+absolutely-positioned React element) added right after `NavigationControl`,
+specifically so it stacks directly under the zoom +/- buttons using
+MapLibre's own control-group layout instead of guessing pixel offsets against it.
+
+**New feature: star a property to keep comparing it across pans.** Star icon
+under the eye icon per list row (grey outline → filled yellow); a starred
+property that pans out of frame stays in the Properties list AND gets a
+standalone yellow ★ marker on the map at its real coordinate (steps aside once
+the property is back in frame, since the normal numbered pin already covers
+it there). Hiding a property un-stars it; hidden rows have no star option.
+
+**Adversarial review caught two real bugs from the first pass, both fixed:**
+1. **Rank-parity break (high):** the first cut interleaved starred-but-out-
+   of-frame properties into the SAME 1..N ranked sequence as the map's pins,
+   so on-screen properties could show a different number in the list than on
+   their own map pin — breaking both the "same rank order as the pins" promise
+   and the QA §15.K screen-reader parity. Fixed by never interleaving:
+   `listRows` numbers 1..N over `pinList` ONLY (identical to `visibleRanked`,
+   guaranteed to always match the map), and starred-but-out-of-frame items get
+   their own **"Starred, not in current view"** section with NO rank number
+   (a number there would falsely claim to mean the same thing as "N on
+   screen"). This also fixed a related medium finding — the header count and
+   an empty "No coverage" message could contradict each other when the only
+   list entry was an out-of-frame star; the header now reads
+   "Properties (N · K starred elsewhere)" so the two counts never look like
+   they disagree.
+2. **Stale ROI data (high):** the starred-property snapshot was only ever
+   captured at star-time, with no refresh — so if you changed the target/
+   budget/financing sliders after starring, an out-of-frame starred property
+   kept showing its OLD pre-change cash flow/price/colour indefinitely (the
+   doc comment claimed it auto-refreshed; it didn't). Fixed: every
+   `fetchPins` response now refreshes the cached snapshot for any starred
+   property that's currently in the fetched viewport (via a `starredIdsRef`
+   read inside the fetch callback, not a `setState`-in-`useEffect`, which
+   `react-hooks/set-state-in-effect` correctly flagged on the first attempt).
+   A property only goes stale once it *actually* pans out of frame, which is
+   the accepted tradeoff the feature exists for.
+
+**Also fixed from the same review pass:** `starredFeatures` cache now deletes
+an entry on unstar (was unbounded growth for the session); eye/star buttons'
+vertical padding bumped back up slightly (two stacked 10.5px icons had
+shrunk the tap target notably) without changing icon size. **Left as
+accepted, documented limitations:** a starred property that's later
+delisted/sold has no server-side existence check and persists as a "starred,
+not in current view" ghost until manually unstarred (session-scoped, self-
+corrects on reload); the pin opacity (−20%) and icon size (−25%) reductions
+were direct, explicit owner requests and were not walked back despite a
+reviewer note that they marginally dilute the viridis colourblind palette's
+fidelity — color was never the only signal there (rank number + $ figure are
+unaffected, full-opacity, and always shown).
+
+**Tests:** typecheck + lint clean; 190 pass / 3 skip offline+DB (unchanged —
+this round is UI/state logic without new pure-function surface). Everything
+above live-verified in the browser, including the specific repro that caught
+the rank-parity bug (star a property, pan until only a different property is
+on screen, compare its map-pin rank number against its list badge).

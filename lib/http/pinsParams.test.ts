@@ -6,28 +6,31 @@ const sp = (obj: Record<string, string>) => new URLSearchParams(obj);
 describe("parsePinsParams — boundary validation (brief §9)", () => {
   const validBbox = "-117.45,34.05,-117.15,34.25";
 
-  it("parses a valid request and defaults the mode to return_only", () => {
+  it("parses a valid request; basis defaults to profit and budget is unbounded", () => {
     const r = parsePinsParams(sp({ bbox: validBbox, target: "100", allCash: "true" }));
     expect(r.success).toBe(true);
     if (r.success) {
-      expect(r.data.mode).toBe("return_only");
+      expect(r.data.basis).toBe("profit");
+      expect(r.data.budgetMin).toBeNull();
+      expect(r.data.budgetMax).toBeNull();
       expect(r.data.target).toBe(100);
       expect(r.data.financing.allCash).toBe(true);
       expect(r.data.bbox).toEqual({ minLng: -117.45, minLat: 34.05, maxLng: -117.15, maxLat: 34.25 });
     }
   });
 
-  it("switches to budget_return when a budget is present", () => {
-    const r = parsePinsParams(sp({ bbox: validBbox, target: "100", budget: "400000" }));
-    expect(r.success && r.data.mode).toBe("budget_return");
+  it("parses a budget range (min + max) and a revenue basis", () => {
+    const r = parsePinsParams(sp({ bbox: validBbox, target: "100", budgetMin: "45000", budgetMax: "500000", basis: "revenue" }));
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.budgetMin).toBe(45000);
+      expect(r.data.budgetMax).toBe(500000);
+      expect(r.data.basis).toBe("revenue");
+    }
   });
 
-  it("mode is always DERIVED from budget presence, never trusts a conflicting explicit ?mode= (regression)", () => {
-    // Explicitly asking for budget_return with no budget must NOT silently
-    // behave like an unlimited budget.
-    const r = parsePinsParams(sp({ bbox: validBbox, target: "100", mode: "budget_return" }));
-    expect(r.success && r.data.mode).toBe("return_only");
-    expect(r.success && r.data.budget).toBeNull();
+  it("rejects an unknown basis", () => {
+    expect(parsePinsParams(sp({ bbox: validBbox, target: "100", basis: "cashflow" })).success).toBe(false);
   });
 
   it("rejects a malformed bbox", () => {
