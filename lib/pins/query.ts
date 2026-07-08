@@ -81,6 +81,13 @@ export interface PinCollection {
   features: PinFeature[];
   /** How many active listings the viewport held before the target filter. */
   scanned: number;
+  /**
+   * True when `scanned` hit SCAN_CAP — the viewport holds AT LEAST this many
+   * active listings, `scanned` is a lower bound, not the true total. Ordered
+   * by confidence then price, so a truncation keeps the more reliable /
+   * cheaper listings rather than an arbitrary DB-scan-order subset.
+   */
+  scannedCapped: boolean;
 }
 
 type Row = Record<string, unknown>;
@@ -106,6 +113,7 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
     where l.is_active = true
       and p.location && ST_MakeEnvelope(${q.bbox.minLng}, ${q.bbox.minLat}, ${q.bbox.maxLng}, ${q.bbox.maxLat}, 4326)
       ${budgetCond}
+    order by cr.confidence_score desc, l.price asc
     limit ${SCAN_CAP}
   `)) as unknown as Row[];
 
@@ -195,6 +203,7 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
     type: "FeatureCollection",
     features: features.slice(0, q.limit ?? 2000),
     scanned: rows.length,
+    scannedCapped: rows.length === SCAN_CAP,
   };
 }
 

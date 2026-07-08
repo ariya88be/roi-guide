@@ -9,6 +9,7 @@
 
 import { computeMonthlyCashFlow } from "@/lib/roi/cashflow";
 import { CONSERVATIVE_DEFAULTS } from "@/lib/roi/defaults";
+import { isAtypicallySmall } from "@/lib/roi/sizeSanity";
 import type { FinancingInput } from "@/lib/roi/amortization";
 
 /** Version tag for the assumption set used; lets us recompute stale rows later. */
@@ -40,6 +41,10 @@ export interface ListingRoiInput {
   /** Sample size behind the rent basis, for coarse confidence. */
   sampleSize: number | null;
   allCash?: boolean;
+  /** For the size-sanity check — the ZIP bedroom-median rent may not apply to
+   * an atypically small unit (see lib/roi/sizeSanity). */
+  squareFootage?: number | null;
+  bedrooms?: number | null;
 }
 
 export interface ComputedRoiRecord {
@@ -77,7 +82,13 @@ export function computeListingRoi(input: ListingRoiInput): ComputedRoiRecord {
     monthlyHoa: input.monthlyHoa,
   });
 
-  const conf = coarseZipConfidence(input.sampleSize);
+  let conf = coarseZipConfidence(input.sampleSize);
+  // A unit too small for its bedroom count breaks the "bedroom-matched ZIP
+  // median" assumption entirely — force Low regardless of how many comps the
+  // ZIP has, since the comps aren't for units like this one.
+  if (isAtypicallySmall(input.squareFootage, input.bedrooms)) {
+    conf = { score: Math.min(conf.score, 20), level: "Low", deEmphasize: true };
+  }
 
   return {
     medianRent: input.monthlyRent,

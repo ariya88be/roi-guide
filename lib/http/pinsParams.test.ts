@@ -22,8 +22,21 @@ describe("parsePinsParams — boundary validation (brief §9)", () => {
     expect(r.success && r.data.mode).toBe("budget_return");
   });
 
+  it("mode is always DERIVED from budget presence, never trusts a conflicting explicit ?mode= (regression)", () => {
+    // Explicitly asking for budget_return with no budget must NOT silently
+    // behave like an unlimited budget.
+    const r = parsePinsParams(sp({ bbox: validBbox, target: "100", mode: "budget_return" }));
+    expect(r.success && r.data.mode).toBe("return_only");
+    expect(r.success && r.data.budget).toBeNull();
+  });
+
   it("rejects a malformed bbox", () => {
     expect(parsePinsParams(sp({ bbox: "1,2,3", target: "100" })).success).toBe(false);
+  });
+
+  it("rejects a bbox spanning more than 10 degrees (cost-amplification guard)", () => {
+    expect(parsePinsParams(sp({ bbox: "-180,-90,180,90", target: "100" })).success).toBe(false);
+    expect(parsePinsParams(sp({ bbox: "-125,32,-114,42", target: "100" })).success).toBe(false); // ~all of CA, 11° lat
   });
 
   it("rejects a bbox with min >= max", () => {

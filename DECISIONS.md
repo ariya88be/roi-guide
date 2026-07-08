@@ -349,3 +349,111 @@ screenshot); the WebGL map canvas stayed black due to WebGL-context exhaustion i
 the automated Chrome session (self-inflicted by ~6 throwaway debug maps; a
 trivial background-only map fails too). Cleared by a browser restart — verify in
 a fresh browser.
+
+---
+
+## 2026-07-08 — Westside/Malibu/Calabasas ingest saga, ranked list, night-mode fixes, full review + honesty fixes
+
+**Ingest iteration (owner rapidly refined scope):** 50mi/$700k -> 50mi/$1M ->
+10mi/$1M -> 25mi/$1M/houses-only, all centered on West Hollywood (34.09,
+-118.3617). Three of these (10mi/25mi/50mi at $1M) were run as CONCURRENT
+background processes against the same DB and RentCast key — a first real test
+of the idempotent-upsert design under actual concurrency. Added
+`getCachedOrLiveMarket()` (market_snapshots gets a `data_by_bedrooms` jsonb
+column, migration 0002) so re-running/continuing over overlapping geography
+reuses already-fetched ZIP rent data instead of re-paying for it.
+
+**Result:** 3,851 total properties, 1,588 house-only (SFH/2-4-unit MF, no known
+HOA) <=$1M. Zero duplicate rows from the concurrency (verified: zero duplicate
+rentcast_id / listing property_id+source / computed_roi.listing_id / snapshot
+zip+date groups; 2,975 of 3,851 properties were genuinely touched by more than
+one run, proving real collisions were absorbed cleanly by `ON CONFLICT DO
+UPDATE`). 1566 Haslam Ter ($895k) now correctly appears under the $1M cap; 8248
+Mannix Dr ($1.08M) correctly stays excluded — both mysteries the owner asked
+about resolved with concrete RentCast data, not guesses.
+
+**New UI (owner request): ranked numbered pins + expandable list.**
+`queryPins` now assigns `rank` 1..N (best-deal-first) to every feature in the
+viewport response; `MapView`'s `pins-label` layer shows the bold rank badge at
+ALL zoom levels (primary UI, not just a heat blur), with a secondary grey
+cap-rate% sub-label once zoomed in. Clicking a pin OR a list row opens the
+Zillow listing (in a new tab) AND the detail card — both paths now share one
+`selectProperty` callback so they can't drift apart. A hover popup (MapLibre
+Popup, NOT a Zillow iframe — Zillow blocks that and we don't scrape) gives a
+quick peek built from our own data. A collapsible "Properties (N)" list under
+the panel shows every current pin in rank order, scrollable — this doubles as
+the QA §15.K "results-list alternative for screen readers" the brief requires.
+Added a "Rating numbers on pins" toggle (show/hide the rank badge only).
+
+**Comprehensive review workflow (owner: "study and review everything... make
+sure all is executed well").** Ran a 4-dimension parallel review (concurrency/
+data-integrity, map+API code correctness, ROI-engine/hygiene/RLS regression
+check, live product smoke test) + a synthesis pass. Confirmed healthy: RLS
+enforcement (roi_app genuinely non-superuser, verified live against pg_roles),
+zero regressions in the untouched foundational modules, 155+ tests green,
+hover-popup escapeHtml usage correct (no XSS), typecheck/lint clean, and — the
+headline finding — the three concurrent ingests caused zero data corruption.
+
+**Real bugs found and fixed:**
+1. **[HIGH] `deal.ts` relAdvantage sign bug.** `localMedianCap > 0 ? ... : 0`
+   silently zeroed the local-outlier signal whenever the local median cap rate
+   was <=0 — realistic once prices climbed into $1M+ territory (property tax +
+   insurance on a big price can exceed modest rent even before a mortgage,
+   giving a negative NOI/cap rate). Naively removing the guard would have
+   flipped the SIGN (dividing by a negative number). Fixed by dividing by
+   `Math.max(Math.abs(localMedianCap), 0.005)` instead — preserves the correct
+   sign whether the baseline is positive, negative, or ~zero. Same epsilon-floor
+   fix applied to the cluster tolerance check (previously excluded any
+   `capRate === 0` property from ever being compared).
+2. **[HIGH] `query.ts` SCAN_CAP (5000) had no ORDER BY** — once a viewport
+   exceeds it, Postgres returns an arbitrary subset and `scanned` silently
+   misrepresents the true count. Added `order by confidence_score desc, price
+   asc` (truncation now keeps the more-reliable, cheaper subset, not an
+   arbitrary one) and a new `scannedCapped` response field so the client can
+   honestly say "there may be more" instead of implying an exact total.
+3. **[MEDIUM] `pinsParams.ts` had no bbox max-span check** — a whole-planet
+   request (`-180,-90,180,90`) parsed successfully, which combined with the
+   SCAN_CAP bug was a real cost-amplification vector. Capped span at 10°.
+4. **[MEDIUM] Night-mode tile swap could silently no-op** if toggled before the
+   map's initial style finished loading (`getSource('carto')` returns
+   undefined pre-load). Fixed: apply immediately if `isStyleLoaded()`, else
+   queue via `map.once('load', apply)`.
+5. **[LOW] mode/budget validation gap** — an explicit `?mode=budget_return`
+   with no `budget` silently behaved like an unlimited budget. `mode` is now
+   ALWAYS derived from budget presence, never taken from a possibly-conflicting
+   explicit param.
+
+**The Beverly Glen investigation (found while verifying the new list feature,
+not part of the workflow review) — the most concrete honesty bug of the
+session.** Three units at 1333 S Beverly Glen Blvd (207-266 sqft "1BR condos")
+were ranked #1, #2, #3 in a West Hollywood viewport at ~44-58% cap rates
+($50k-75k price, $2,379-2,413/mo rent). Root cause: our Phase-1 rent basis
+matches bedroom count only, so a 207 sqft micro-unit gets the SAME 1BR ZIP-
+median rent ($3,499) as a normal ~800 sqft 1BR — the assumption clearly does
+not apply. `belowMarket` correctly flagged them; `cluster` did NOT, because the
+three units' prices vary 15-30% from each other (same building, different tiny
+sizes) — outside the 10% price+capRate tolerance the cluster check used.
+
+Fixed with two complementary changes:
+- `deal.ts`: added a `sameBuildingRadiusMiles` (~100ft) geometric check —
+  2+ OTHER units within ~100ft flags a cluster regardless of price/cap
+  variance, directly catching "one building, many broken-rent units."
+- New `lib/roi/sizeSanity.ts` (pure, tested): `isAtypicallySmall(sqft,
+  bedrooms)` against a lenient per-bedroom floor (400 sqft for 1BR, etc.).
+  Wired into `lib/ingest/compute.ts`'s `computeListingRoi` — an atypically
+  small unit forces confidence to Low + de-emphasize, REGARDLESS of ZIP comp
+  count, since the comps aren't for units like this one.
+- **Backfilled the 15 already-ingested atypically-small rows** (incl. all 3
+  Beverly Glen units) directly via SQL, since the fix only applies to future
+  ingests otherwise and the owner was looking at this exact live data.
+
+**After the fix (live-verified):** the 3 units dropped from rank 1-3
+(dealScore 0.97-1.00) to rank 6-8 (dealScore 0.63-0.65), now showing
+`cluster=true`, `confidence=Low(20)`, `deEmphasize=true` — four independent
+honesty signals converging. They are not hidden (still real, still clear the
+target) — per the product's "flag, don't hide" philosophy, the detail card
+surfaces the cluster/belowMarket warnings for anyone who clicks in.
+
+**Tests:** deal.ts +6 (relAdvantage sign regression x3, same-building cluster
+regression x2), sizeSanity.ts (new file) +9, pinsParams.ts +2 (mode-derivation,
+bbox-span). 168 pass / 3 skip with DB access; typecheck+lint clean throughout.

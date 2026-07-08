@@ -138,6 +138,8 @@ export async function ingestZip(params: IngestZipParams): Promise<IngestSummary>
       monthlyRent: pick.rent,
       monthlyHoa: listing.hoa?.fee ?? null,
       sampleSize: pick.sampleSize,
+      squareFootage: listing.squareFootage ?? null,
+      bedrooms: listing.bedrooms ?? null,
     });
 
     const propertyId = await upsertProperty(db, listing);
@@ -332,6 +334,8 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
         monthlyRent: pick.rent,
         monthlyHoa: listing.hoa?.fee ?? null,
         sampleSize: pick.sampleSize,
+        squareFootage: listing.squareFootage ?? null,
+        bedrooms: listing.bedrooms ?? null,
       });
       const propertyId = await upsertProperty(db, listing);
       const listingId = await upsertListing(db, propertyId, listing, now);

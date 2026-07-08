@@ -178,6 +178,36 @@ interface DealInfo {
   belowMarket: boolean;
 }
 
+/** One /api/pins GeoJSON feature — matches lib/pins/query.ts's PinFeature shape. */
+interface PinFeature {
+  type: "Feature";
+  geometry: { type: "Point"; coordinates: [number, number] };
+  properties: {
+    id: string;
+    address: string;
+    propertyType: string;
+    bedrooms: number;
+    bathrooms: number;
+    price: number;
+    cashFlow: number;
+    medianRent: number;
+    capRatePct: number;
+    localCapRatePct: number;
+    relAdvantagePct: number;
+    dealScore: number;
+    cluster: boolean;
+    belowMarket: boolean;
+    color: string;
+    heatWeight: number;
+    band: string;
+    confidence: string;
+    confidenceScore: number;
+    deEmphasize: boolean;
+    hoaMissing: boolean;
+    rank: number;
+  };
+}
+
 export default function MapView() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -195,8 +225,15 @@ export default function MapView() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showHeat, setShowHeat] = useState(true);
+  const [showRank, setShowRank] = useState(true);
   const [dealInfo, setDealInfo] = useState<DealInfo | null>(null);
   const [scanned, setScanned] = useState<number | null>(null);
+  const [scannedCapped, setScannedCapped] = useState(false);
+  // The current viewport's pins, kept in React state (not just the MapLibre
+  // source) so the expandable list below the panel can render them — this also
+  // doubles as the "results-list alternative" a map needs for screen readers.
+  const [pinList, setPinList] = useState<PinFeature[]>([]);
+  const [listExpanded, setListExpanded] = useState(false);
   // Lazy initializer: reads the OS preference once, only on the client.
   const [darkMode, setDarkMode] = useState<boolean>(prefersDark);
 
@@ -226,6 +263,10 @@ export default function MapView() {
       previewPopupRef.current?.remove();
       setCount(fc.features.length);
       setScanned(fc.scanned ?? null);
+      setScannedCapped(Boolean(fc.scannedCapped));
+      // Already sorted best-to-worst by the API (rank ascending) — the list
+      // below the panel and the pin numbering share this exact order.
+      setPinList(fc.features as PinFeature[]);
     } finally {
       setLoading(false);
     }
@@ -242,6 +283,36 @@ export default function MapView() {
       setDetailLoading(false);
     }
   }, []);
+
+  /**
+   * Shared "pick this property" action — opens its Zillow listing and loads
+   * the detail card. Used by both a map-pin click and a list-row click, so the
+   * two stay identical by construction rather than by two hand-kept copies.
+   */
+  const selectProperty = useCallback(
+    (p: PinFeature["properties"]) => {
+      window.open(zillowUrl(p.address), "_blank", "noopener,noreferrer");
+      openDetail(p.id, {
+        capRatePct: p.capRatePct,
+        localCapRatePct: p.localCapRatePct,
+        relAdvantagePct: p.relAdvantagePct,
+        dealScore: p.dealScore,
+        cluster: p.cluster,
+        belowMarket: p.belowMarket,
+      });
+    },
+    [openDetail],
+  );
+
+  /** List-row click: also fly the map to the property, since from a list you
+   * don't yet know where on the map it is. */
+  const selectAndFlyTo = useCallback(
+    (f: PinFeature) => {
+      mapRef.current?.flyTo({ center: f.geometry.coordinates, zoom: Math.max(mapRef.current.getZoom(), 14) });
+      selectProperty(f.properties);
+    },
+    [selectProperty],
+  );
 
   // Initialise the map once.
   useEffect(() => {
@@ -365,22 +436,37 @@ export default function MapView() {
       const hidePreview = () => previewPopup.remove();
 
       // Clicking a pin opens its listing directly (Zillow), and also updates the
-      // side detail card with the full cash-flow / deal-quality breakdown.
+      // side detail card with the full cash-flow / deal-quality breakdown — the
+      // exact same action a list-row click triggers (see selectProperty above).
       const openListing = (e: maplibregl.MapLayerMouseEvent) => {
         const p = e.features?.[0]?.properties;
         const id = p?.id as string | undefined;
-        if (!id) return;
+        if (!id || !p) return;
         previewPopup.remove();
-        const address = p?.address as string | undefined;
-        if (address) window.open(zillowUrl(address), "_blank", "noopener,noreferrer");
         const bool = (v: unknown) => v === true || v === "true";
-        openDetail(id, {
-          capRatePct: Number(p!.capRatePct),
-          localCapRatePct: Number(p!.localCapRatePct),
-          relAdvantagePct: Number(p!.relAdvantagePct),
-          dealScore: Number(p!.dealScore),
-          cluster: bool(p!.cluster),
-          belowMarket: bool(p!.belowMarket),
+        selectProperty({
+          id,
+          address: String(p.address ?? ""),
+          propertyType: String(p.propertyType ?? ""),
+          bedrooms: Number(p.bedrooms),
+          bathrooms: Number(p.bathrooms),
+          price: Number(p.price),
+          cashFlow: Number(p.cashFlow),
+          medianRent: Number(p.medianRent),
+          capRatePct: Number(p.capRatePct),
+          localCapRatePct: Number(p.localCapRatePct),
+          relAdvantagePct: Number(p.relAdvantagePct),
+          dealScore: Number(p.dealScore),
+          cluster: bool(p.cluster),
+          belowMarket: bool(p.belowMarket),
+          color: String(p.color ?? ""),
+          heatWeight: Number(p.heatWeight),
+          band: String(p.band ?? ""),
+          confidence: String(p.confidence ?? ""),
+          confidenceScore: Number(p.confidenceScore),
+          deEmphasize: bool(p.deEmphasize),
+          hoaMissing: bool(p.hoaMissing),
+          rank: Number(p.rank),
         });
       };
 
@@ -409,7 +495,7 @@ export default function MapView() {
       map.remove();
       mapRef.current = null;
     };
-  }, [fetchPins, openDetail]);
+  }, [fetchPins, openDetail, selectProperty]);
 
   // Refetch when filters change — debounced so typing/sliding doesn't spam the API.
   useEffect(() => {
@@ -426,11 +512,28 @@ export default function MapView() {
     }
   }, [showHeat]);
 
+  // Toggle the rank-number badge on each pin (the "1 best ... N worst" rating).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map?.getLayer("pins-label")) {
+      map.setLayoutProperty("pins-label", "visibility", showRank ? "visible" : "none");
+    }
+  }, [showRank]);
+
   // Night mode: swap basemap tiles live via setTiles (no setStyle — that would
   // wipe the pins/heat/label layers, which aren't part of the style itself).
+  // The 'carto' source only exists once the initial style finishes loading, so
+  // toggling in that brief window (map not yet loaded) queues a one-time
+  // listener instead of silently no-opping.
   useEffect(() => {
-    const source = mapRef.current?.getSource("carto") as maplibregl.RasterTileSource | undefined;
-    source?.setTiles(darkMode ? DARK_TILES : LIGHT_TILES);
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const source = map.getSource("carto") as maplibregl.RasterTileSource | undefined;
+      source?.setTiles(darkMode ? DARK_TILES : LIGHT_TILES);
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
   }, [darkMode]);
 
   // Esc closes the detail card.
@@ -475,8 +578,13 @@ export default function MapView() {
             ? "Loading…"
             : count == null
               ? "Pan or zoom to load listings"
-              : `${count} of ${scanned ?? count} listing${(scanned ?? count) === 1 ? "" : "s"} clear your target`}
+              : `${count} of ${scanned ?? count}${scannedCapped ? "+" : ""} listing${(scanned ?? count) === 1 ? "" : "s"} clear your target`}
         </p>
+        {!loading && scannedCapped && (
+          <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+            This view is dense — zoom in to see everything on screen.
+          </p>
+        )}
         {!loading && count === 0 && scanned === 0 && (
           <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
             No coverage in this view yet — we cover the Inland Empire west of San Bernardino. Pan east or zoom out.
@@ -546,6 +654,12 @@ export default function MapView() {
           />
           Heatmap overlay
           <span className="text-gray-400 dark:text-gray-500">(zoom out)</span>
+        </label>
+
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+          <input type="checkbox" checked={showRank} onChange={(e) => setShowRank(e.target.checked)} />
+          Rating numbers on pins
+          <span className="text-gray-400 dark:text-gray-500">(1 = best)</span>
         </label>
 
         <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -646,6 +760,62 @@ export default function MapView() {
             to open its listing.
           </p>
         </div>
+
+        {/* Expandable property list — same rank order as the pins; doubles as
+            the results-list alternative a map needs for screen readers. */}
+        <button
+          type="button"
+          onClick={() => setListExpanded((v) => !v)}
+          aria-expanded={listExpanded}
+          aria-controls="roi-property-list"
+          className="mt-3 flex w-full items-center justify-between border-t border-gray-200 pt-2 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300"
+        >
+          <span>Properties ({pinList.length})</span>
+          <span
+            className={`inline-block text-[10px] transition-transform ${listExpanded ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          >
+            ▾
+          </span>
+        </button>
+        {listExpanded && (
+          <div
+            id="roi-property-list"
+            className="mt-2 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700"
+          >
+            {pinList.length === 0 ? (
+              <p className="p-2 text-[11px] text-gray-400 dark:text-gray-500">No properties in the current view.</p>
+            ) : (
+              <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                {pinList.map((f) => (
+                  <li key={f.properties.id}>
+                    <button
+                      type="button"
+                      onClick={() => selectAndFlyTo(f)}
+                      className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      <span
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                        style={{ background: f.properties.color }}
+                        aria-hidden="true"
+                      >
+                        {f.properties.rank}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[11px] text-gray-800 dark:text-gray-200">
+                          Rank {f.properties.rank}: {f.properties.address}
+                        </span>
+                        <span className="block text-[10px] text-gray-500 dark:text-gray-400">
+                          {money(f.properties.cashFlow)}/mo · {money(f.properties.price)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Detail card */}

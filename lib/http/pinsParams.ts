@@ -28,6 +28,15 @@ export const PinsParamsSchema = z
         ctx.addIssue({ code: "custom", message: "bbox out of range" });
         return z.NEVER;
       }
+      // Cap the viewport span so a whole-planet (or whole-country) request can't
+      // amplify cost downstream (SCAN_CAP rows × an O(n²) deal-scoring pass).
+      // 10° is comfortably more than any real map viewport needs (~690mi) —
+      // even zoomed out to see all of Southern California is under 5°.
+      const MAX_SPAN_DEGREES = 10;
+      if (maxLng - minLng > MAX_SPAN_DEGREES || maxLat - minLat > MAX_SPAN_DEGREES) {
+        ctx.addIssue({ code: "custom", message: `bbox span must be <= ${MAX_SPAN_DEGREES}°` });
+        return z.NEVER;
+      }
       return { minLng, minLat, maxLng, maxLat };
     }),
     target: z.coerce.number().finite().positive(),
@@ -58,7 +67,10 @@ export const PinsParamsSchema = z
     bbox: v.bbox,
     target: v.target,
     budget: v.budget ?? null,
-    mode: v.mode ?? (v.budget != null ? ("budget_return" as const) : ("return_only" as const)),
+    // Always DERIVED from budget presence — an explicit ?mode= that disagrees
+    // with whether a budget was actually given would otherwise silently win,
+    // e.g. mode=budget_return with no budget behaving like an unlimited budget.
+    mode: v.budget != null ? ("budget_return" as const) : ("return_only" as const),
     limit: v.limit,
     houseOnly: v.houseOnly,
     gradient: {

@@ -56,6 +56,15 @@ export interface DealConfig {
   clusterMinCount: number;
   /** Price/cap similarity tolerance for "near-identical". */
   clusterTolerance: number;
+  /**
+   * Radius (miles) for "literally the same building/lot" — much tighter than
+   * clusterRadiusMiles. ~0.02mi ≈ 100ft.
+   */
+  sameBuildingRadiusMiles: number;
+  /** Min OTHER units at the same building to flag a cluster regardless of
+   * price/cap spread (catches e.g. a micro-unit building where unit prices
+   * vary a lot but all share one broken rent assumption). */
+  sameBuildingMinCount: number;
   /** price < this × localMedianPrice ⇒ belowMarket flag. */
   belowMarketRatio: number;
   /** relAdvantage that maps to the top of the relative score. */
@@ -71,6 +80,8 @@ export const DEFAULT_DEAL_CONFIG: Readonly<DealConfig> = Object.freeze({
   clusterRadiusMiles: 0.5,
   clusterMinCount: 4,
   clusterTolerance: 0.1,
+  sameBuildingRadiusMiles: 0.02,
+  sameBuildingMinCount: 2,
   belowMarketRatio: 0.6,
   relScale: 0.4,
   weightAbsolute: 0.5,
@@ -83,6 +94,13 @@ function milesBetween(aLat: number, aLng: number, bLat: number, bLng: number): n
   const dLng = (aLng - bLng) * 69.0 * Math.cos((aLat * Math.PI) / 180);
   return Math.hypot(dLat, dLng);
 }
+
+/**
+ * Floor used when a cap rate sits at/near zero, so dividing by it doesn't blow
+ * up or (worse) flip sign. 0.5 percentage points is small enough to not distort
+ * a genuinely large cap rate, large enough to keep a near-zero denominator sane.
+ */
+const MIN_CAP_DENOM = 0.005;
 
 function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
@@ -115,6 +133,8 @@ export function scoreDeals(
     const neighborCaps: number[] = [];
     const neighborPrices: number[] = [];
     let clusterCount = 0;
+    let sameBuildingCount = 0;
+    const itCapDenom = Math.max(Math.abs(it.capRate), MIN_CAP_DENOM);
 
     for (const other of items) {
       if (other.id === it.id) continue;
@@ -126,17 +146,24 @@ export function scoreDeals(
       if (
         d <= config.clusterRadiusMiles &&
         it.price > 0 &&
-        it.capRate !== 0 &&
         Math.abs(other.price - it.price) / it.price <= config.clusterTolerance &&
-        Math.abs(other.capRate - it.capRate) / Math.abs(it.capRate) <= config.clusterTolerance
+        Math.abs(other.capRate - it.capRate) / itCapDenom <= config.clusterTolerance
       ) {
         clusterCount++;
       }
+      // Literally the same building/lot, regardless of how much unit prices
+      // vary — e.g. a micro-unit building where every unit shares one broken
+      // rent assumption even though prices swing 15-30% between units.
+      if (d <= config.sameBuildingRadiusMiles) sameBuildingCount++;
     }
 
     const localMedianCap = neighborCaps.length ? median(neighborCaps) : it.capRate;
     const localMedianPrice = neighborPrices.length ? median(neighborPrices) : it.price;
-    const relAdvantage = localMedianCap > 0 ? (it.capRate - localMedianCap) / localMedianCap : 0;
+    // Divide by |localMedianCap| (never the signed value) so the SIGN of
+    // relAdvantage always reflects whether `it` beats the local baseline, even
+    // when that baseline is negative (realistic for expensive, high-tax,
+    // low-rent properties) or exactly zero.
+    const relAdvantage = (it.capRate - localMedianCap) / Math.max(Math.abs(localMedianCap), MIN_CAP_DENOM);
 
     // Absolute capital-efficiency score: percentile of cap rate across the market.
     const absScore = percentileRank(capsSorted, it.capRate);
@@ -145,7 +172,7 @@ export function scoreDeals(
 
     let dealScore = config.weightAbsolute * absScore + (1 - config.weightAbsolute) * relScore;
 
-    const cluster = clusterCount >= config.clusterMinCount;
+    const cluster = clusterCount >= config.clusterMinCount || sameBuildingCount >= config.sameBuildingMinCount;
     if (cluster) dealScore *= config.clusterPenalty;
     const belowMarket = it.price < config.belowMarketRatio * localMedianPrice;
 

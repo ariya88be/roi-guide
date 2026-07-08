@@ -143,7 +143,7 @@ live("LIVE westside radius ingest (real RentCast + DB)", () => {
           radiusMiles: Number(process.env.INGEST_RADIUS ?? 50),
           now: new Date(),
           snapshotDate: new Date().toISOString().slice(0, 10),
-          maxPrice: 700_000,
+          maxPrice: Number(process.env.INGEST_MAX_PRICE ?? 700_000),
           excludeCities: EXCLUDE,
           pageSize: 500,
           maxListings: Number(process.env.INGEST_MAX_LISTINGS ?? 8000),
