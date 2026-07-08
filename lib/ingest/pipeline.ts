@@ -20,6 +20,10 @@ export interface IngestClient {
     zipCode?: string;
     status?: string;
     limit?: number;
+    offset?: number;
+    latitude?: number;
+    longitude?: number;
+    radius?: number;
   }): Promise<SaleListing[]>;
 }
 
@@ -90,4 +94,154 @@ export async function ingestZip(params: IngestZipParams): Promise<IngestSummary>
   }
 
   return { zipCode, fetched: raw.length, screenedOut, skippedNoRent, ingested };
+}
+
+export interface IngestRadiusParams {
+  client: IngestClient;
+  db: Database;
+  center: { lat: number; lng: number };
+  radiusMiles: number;
+  now: Date;
+  snapshotDate: string;
+  /** Only ingest listings at or below this price (client-side; provider has no price filter). */
+  maxPrice?: number | null;
+  /** Listings per page. */
+  pageSize?: number;
+  /** Safety cap on total listings pulled. */
+  maxListings?: number;
+  /**
+   * Cap on how many ZIPs we fetch rent-market data for (one call each). We take
+   * the ZIPs with the most inventory first; listings in un-fetched ZIPs are
+   * skipped (no rent basis) — this bounds API cost on the free/low tiers.
+   */
+  maxMarketZips?: number;
+}
+
+export interface RadiusSummary {
+  /** Active listings the radius returned. */
+  fetched: number;
+  /** Of those, at or below the price cap. */
+  belowPriceCap: number;
+  screenedOut: number;
+  skippedNoRent: number;
+  ingested: number;
+  /** ZIPs we pulled market data for. */
+  zipsWithMarket: number;
+  /** ZIPs with inventory we skipped to stay in budget. */
+  zipsSkipped: number;
+  /** RentCast calls this run made (listings pages + market ZIPs). */
+  approxApiCalls: number;
+}
+
+/**
+ * Ingest every active listing within `radiusMiles` of a point (RentCast supports
+ * lat/long/radius natively — no ZIP enumeration). Rent basis is each listing's
+ * ZIP bedroom-matched median, fetched only for the highest-inventory ZIPs to
+ * bound API cost. Resilient: a failed market call skips that ZIP, not the run.
+ */
+export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSummary> {
+  const {
+    client,
+    db,
+    center,
+    radiusMiles,
+    now,
+    snapshotDate,
+    maxPrice = null,
+    pageSize = 500,
+    maxListings = 3000,
+    maxMarketZips = 25,
+  } = params;
+
+  // 1. Paginate listings within the radius.
+  const all: SaleListing[] = [];
+  let offset = 0;
+  let pages = 0;
+  while (all.length < maxListings) {
+    let page: SaleListing[];
+    try {
+      page = await client.getSaleListings({
+        latitude: center.lat,
+        longitude: center.lng,
+        radius: radiusMiles,
+        status: "Active",
+        limit: pageSize,
+        offset,
+      });
+    } catch {
+      break; // quota/network — proceed with what we have
+    }
+    pages++;
+    all.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  // 2. Price cap.
+  const priced = maxPrice != null ? all.filter((l) => l.price <= maxPrice) : all;
+
+  // 3. Group by ZIP; fetch market for the highest-inventory ZIPs only.
+  const byZip = new Map<string, SaleListing[]>();
+  for (const l of priced) {
+    if (!l.zipCode) continue;
+    const bucket = byZip.get(l.zipCode);
+    if (bucket) bucket.push(l);
+    else byZip.set(l.zipCode, [l]);
+  }
+  const zipsByInventory = [...byZip.entries()].sort((a, b) => b[1].length - a[1].length);
+  const marketZips = zipsByInventory.slice(0, maxMarketZips).map(([z]) => z);
+
+  const marketByZip = new Map<string, RentalMarket>();
+  for (const zip of marketZips) {
+    try {
+      const market = await client.getRentalMarket(zip);
+      marketByZip.set(zip, market);
+      await upsertMarketSnapshot(db, zip, snapshotDate, market);
+    } catch {
+      // Skip this ZIP's listings rather than abort the whole run (e.g. quota).
+    }
+  }
+
+  // 4. Screen, price rent, compute ROI, persist.
+  let screenedOut = 0;
+  let skippedNoRent = 0;
+  let ingested = 0;
+  for (const listing of priced) {
+    const screen = screenListing(toScreenableListing(listing, now), now);
+    if (!screen.render) {
+      screenedOut++;
+      continue;
+    }
+    const market = listing.zipCode ? marketByZip.get(listing.zipCode) : undefined;
+    if (!market) {
+      skippedNoRent++;
+      continue;
+    }
+    const pick = pickBedroomMedianRent(market, listing.bedrooms);
+    if (pick.rent == null) {
+      skippedNoRent++;
+      continue;
+    }
+    const roi = computeListingRoi({
+      price: listing.price,
+      monthlyRent: pick.rent,
+      monthlyHoa: listing.hoa?.fee ?? null,
+      sampleSize: pick.sampleSize,
+    });
+    const propertyId = await upsertProperty(db, listing);
+    const listingId = await upsertListing(db, propertyId, listing, now);
+    await upsertComputedRoi(db, listingId, propertyId, roi);
+    ingested++;
+  }
+
+  return {
+    fetched: all.length,
+    belowPriceCap: priced.length,
+    screenedOut,
+    skippedNoRent,
+    ingested,
+    zipsWithMarket: marketByZip.size,
+    zipsSkipped: byZip.size - marketByZip.size,
+    approxApiCalls: pages + marketByZip.size,
+  };
 }
