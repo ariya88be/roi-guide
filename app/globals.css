@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Drive `dark:` utilities from an explicit `.dark` class (our own Night mode
+   toggle) rather than only the OS's prefers-color-scheme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -23,4 +27,24 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* MapLibre popup chrome (the hover "sneak peek") isn't Tailwind-classed —
+   theme it directly for Night mode. Content colours are set inline per-call
+   in buildPreviewHtml(); this just handles the popup's own background/tip. */
+.dark .roi-preview-popup .maplibregl-popup-content {
+  background-color: #1f2937;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.5);
+}
+.dark .roi-preview-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip {
+  border-bottom-color: #1f2937;
+}
+.dark .roi-preview-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+  border-top-color: #1f2937;
+}
+.dark .roi-preview-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: #1f2937;
+}
+.dark .roi-preview-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: #1f2937;
 }

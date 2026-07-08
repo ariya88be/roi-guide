@@ -17,26 +17,35 @@ import { interpolatePalette } from "@/lib/roi/color";
 // Start looking WEST of San Bernardino, along the SB→LA corridor (Fontana/Ontario belt).
 const MAP_START = { lng: -117.5, lat: 34.03, zoom: 10 } as const;
 
-// Keyless CARTO "Voyager" raster basemap — a permissive dev/prod-friendly
-// provider (OSM's own tile server forbids heavy/app use). Swap to MapTiler or
-// Protomaps vector tiles (with a key) for the final polish.
-const BASEMAP_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    carto: {
-      type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-        "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-      ],
-      tileSize: 256,
-      attribution: "© OpenStreetMap contributors © CARTO",
+// Keyless CARTO raster basemaps — a permissive dev/prod-friendly provider
+// (OSM's own tile server forbids heavy/app use). Swap to MapTiler or Protomaps
+// vector tiles (with a key) for the final polish. Voyager (day) / Dark Matter
+// (night) share the same source id ("carto") so Night mode can just call
+// setTiles() on the live source instead of rebuilding the whole style.
+const LIGHT_TILES = ["a", "b", "c", "d"].map(
+  (s) => `https://${s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png`,
+);
+const DARK_TILES = ["a", "b", "c", "d"].map((s) => `https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png`);
+
+function buildBasemapStyle(dark: boolean): maplibregl.StyleSpecification {
+  return {
+    version: 8,
+    sources: {
+      carto: {
+        type: "raster",
+        tiles: dark ? DARK_TILES : LIGHT_TILES,
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors © CARTO",
+      },
     },
-  },
-  layers: [{ id: "carto", type: "raster", source: "carto" }],
-};
+    layers: [{ id: "carto", type: "raster", source: "carto" }],
+  };
+}
+
+/** True on first client render if the OS prefers dark — the Night-mode default. */
+function prefersDark(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
 
 interface Filters {
   target: number;
@@ -117,7 +126,7 @@ function escapeHtml(s: string): string {
  * iframing and we don't scrape it) — this is our OWN data, styled like a quick
  * preview card, so a user can gauge a pin before opening the real Zillow tab.
  */
-function buildPreviewHtml(p: Record<string, unknown>): string {
+function buildPreviewHtml(p: Record<string, unknown>, dark: boolean): string {
   const rank = Number(p.rank);
   const address = escapeHtml(String(p.address ?? "Unknown address"));
   const price = Number(p.price);
@@ -127,20 +136,24 @@ function buildPreviewHtml(p: Record<string, unknown>): string {
   const relAdvantagePct = Number(p.relAdvantagePct);
   const color = escapeHtml(String(p.color ?? "#666"));
   const label = dealLabel(Number(p.dealScore));
-  const relColor = relAdvantagePct >= 0 ? "#15803d" : "#dc2626";
+  const relColor = relAdvantagePct >= 0 ? (dark ? "#4ade80" : "#15803d") : dark ? "#f87171" : "#dc2626";
+  const textPrimary = dark ? "#f3f4f6" : "#111827";
+  const textSecondary = dark ? "#d1d5db" : "#374151";
+  const textMuted = dark ? "#9ca3af" : "#6b7280";
+  const textFaint = dark ? "#6b7280" : "#9ca3af";
   return `
     <div style="min-width:210px;font-family:inherit">
       <div style="display:flex;align-items:center;gap:8px">
         <span style="background:${color};display:flex;height:22px;width:22px;align-items:center;justify-content:center;border-radius:9999px;font-size:11px;font-weight:700;color:#fff">${rank}</span>
-        <span style="font-weight:600;color:#111827;font-size:13px">${money(price)}</span>
+        <span style="font-weight:600;color:${textPrimary};font-size:13px">${money(price)}</span>
       </div>
-      <div style="margin-top:4px;font-size:12px;color:#374151">${address}</div>
+      <div style="margin-top:4px;font-size:12px;color:${textSecondary}">${address}</div>
       <div style="margin-top:4px;display:flex;justify-content:space-between;font-size:12px">
-        <span style="font-weight:600;color:#15803d">${money(cashFlow)}/mo</span>
-        <span style="color:#6b7280">${capRatePct}% cap (area ${localCapRatePct}%)</span>
+        <span style="font-weight:600;color:${dark ? "#4ade80" : "#15803d"}">${money(cashFlow)}/mo</span>
+        <span style="color:${textMuted}">${capRatePct}% cap (area ${localCapRatePct}%)</span>
       </div>
       <div style="margin-top:2px;font-size:10px;color:${relColor}">${relAdvantagePct >= 0 ? "+" : ""}${relAdvantagePct}% vs area — ${label.text}</div>
-      <div style="margin-top:4px;font-size:10px;color:#9ca3af">Click to view the listing →</div>
+      <div style="margin-top:4px;font-size:10px;color:${textFaint}">Click to view the listing →</div>
     </div>
   `;
 }
@@ -172,6 +185,9 @@ export default function MapView() {
   const filtersRef = useRef<Filters>(INITIAL_FILTERS);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewPopupRef = useRef<maplibregl.Popup | null>(null);
+  // Read by map event handlers (registered once at map init) so they see the
+  // CURRENT Night-mode value rather than the one captured at setup time.
+  const darkModeRef = useRef(false);
 
   const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS);
   const [count, setCount] = useState<number | null>(null);
@@ -181,11 +197,16 @@ export default function MapView() {
   const [showHeat, setShowHeat] = useState(true);
   const [dealInfo, setDealInfo] = useState<DealInfo | null>(null);
   const [scanned, setScanned] = useState<number | null>(null);
+  // Lazy initializer: reads the OS preference once, only on the client.
+  const [darkMode, setDarkMode] = useState<boolean>(prefersDark);
 
-  // Keep the ref in sync with state (in an effect, never during render).
+  // Keep the refs in sync with state (in an effect, never during render).
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+  useEffect(() => {
+    darkModeRef.current = darkMode;
+  }, [darkMode]);
 
   const fetchPins = useCallback(async () => {
     const map = mapRef.current;
@@ -227,7 +248,7 @@ export default function MapView() {
     if (mapRef.current || !mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: BASEMAP_STYLE,
+      style: buildBasemapStyle(darkModeRef.current),
       center: [MAP_START.lng, MAP_START.lat],
       zoom: MAP_START.zoom,
       // Allow the WebGL canvas to be captured in screenshots/exports (MapLibre v5
@@ -330,12 +351,16 @@ export default function MapView() {
         closeOnClick: false,
         offset: 14,
         maxWidth: "240px",
+        className: "roi-preview-popup",
       });
       previewPopupRef.current = previewPopup;
       const showPreview = (e: maplibregl.MapLayerMouseEvent) => {
         const f = e.features?.[0];
         if (!f || !f.properties || f.geometry.type !== "Point") return;
-        previewPopup.setLngLat(f.geometry.coordinates as [number, number]).setHTML(buildPreviewHtml(f.properties)).addTo(map);
+        previewPopup
+          .setLngLat(f.geometry.coordinates as [number, number])
+          .setHTML(buildPreviewHtml(f.properties, darkModeRef.current))
+          .addTo(map);
       };
       const hidePreview = () => previewPopup.remove();
 
@@ -401,6 +426,13 @@ export default function MapView() {
     }
   }, [showHeat]);
 
+  // Night mode: swap basemap tiles live via setTiles (no setStyle — that would
+  // wipe the pins/heat/label layers, which aren't part of the style itself).
+  useEffect(() => {
+    const source = mapRef.current?.getSource("carto") as maplibregl.RasterTileSource | undefined;
+    source?.setTiles(darkMode ? DARK_TILES : LIGHT_TILES);
+  }, [darkMode]);
+
   // Esc closes the detail card.
   useEffect(() => {
     if (!detail && !detailLoading) return;
@@ -417,17 +449,28 @@ export default function MapView() {
     .join(", ")})`;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden">
+    <div className={`relative h-screen w-screen overflow-hidden ${darkMode ? "dark" : ""}`}>
       <div ref={mapContainer} className="h-full w-full" />
 
       {/* Controls */}
-      <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur">
-        <h1 className="text-base font-semibold text-gray-900">ROI Guide</h1>
-        <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
+      <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/95 p-4 shadow-lg backdrop-blur dark:bg-gray-900/90 dark:shadow-black/40">
+        <div className="flex items-start justify-between gap-2">
+          <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">ROI Guide</h1>
+          <button
+            type="button"
+            onClick={() => setDarkMode((d) => !d)}
+            aria-label={darkMode ? "Switch to day mode" : "Switch to night mode"}
+            title={darkMode ? "Day mode" : "Night mode"}
+            className="rounded-full p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            {darkMode ? "☀️" : "🌙"}
+          </button>
+        </div>
+        <p className="mt-0.5 text-[11px] leading-tight text-gray-500 dark:text-gray-400">
           Set the monthly profit you want — pins are active listings that clear it, colored by how far.
           Coverage: the Inland Empire, San Bernardino heading west toward LA.
         </p>
-        <p className="mt-2 text-xs font-medium text-gray-700">
+        <p className="mt-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           {loading
             ? "Loading…"
             : count == null
@@ -435,19 +478,19 @@ export default function MapView() {
               : `${count} of ${scanned ?? count} listing${(scanned ?? count) === 1 ? "" : "s"} clear your target`}
         </p>
         {!loading && count === 0 && scanned === 0 && (
-          <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700">
+          <p className="mt-1 rounded-md bg-blue-50 px-2 py-1 text-[11px] leading-tight text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
             No coverage in this view yet — we cover the Inland Empire west of San Bernardino. Pan east or zoom out.
           </p>
         )}
         {!loading && count === 0 && scanned != null && scanned > 0 && (
-          <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-tight text-amber-700">
+          <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-tight text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
             {scanned} active listing{scanned === 1 ? "" : "s"} here, but none clear +${filters.target.toLocaleString()}/mo
             {filters.allCash ? "" : ` with ${Math.round(filters.downPaymentPct * 100)}% down @ ${filters.annualRatePct}%`}. Lower
             your target{filters.allCash ? "" : " or try All-cash"}.
           </p>
         )}
 
-        <label className="mt-3 block text-xs font-medium text-gray-700">
+        <label className="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">
           Min monthly cash flow (target)
           <input
             type="number"
@@ -455,11 +498,11 @@ export default function MapView() {
             min={1}
             step={50}
             onChange={(e) => setFilters((f) => ({ ...f, target: Math.max(1, Number(e.target.value) || 1) }))}
-            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm"
+            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
         </label>
 
-        <label className="mt-3 block text-xs font-medium text-gray-700">
+        <label className="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">
           Max budget (optional)
           <input
             type="number"
@@ -471,41 +514,41 @@ export default function MapView() {
               const v = Number(e.target.value);
               setFilters((f) => ({ ...f, budget: e.target.value === "" || !(v > 0) ? null : v }));
             }}
-            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm"
+            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
         </label>
 
-        <label className="mt-3 flex items-center gap-2 text-xs font-medium text-gray-700">
+        <label className="mt-3 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
             type="checkbox"
             checked={filters.allCash}
             onChange={(e) => setFilters((f) => ({ ...f, allCash: e.target.checked }))}
           />
           All-cash purchase
-          <span className="text-gray-400">(off = 20% down @ 7%)</span>
+          <span className="text-gray-400 dark:text-gray-500">(off = 20% down @ 7%)</span>
         </label>
 
-        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
             type="checkbox"
             checked={filters.houseOnly}
             onChange={(e) => setFilters((f) => ({ ...f, houseOnly: e.target.checked }))}
           />
           House only
-          <span className="text-gray-400">(no condo/apt/manufactured, no HOA)</span>
+          <span className="text-gray-400 dark:text-gray-500">(no condo/apt/manufactured, no HOA)</span>
         </label>
 
-        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
             type="checkbox"
             checked={showHeat}
             onChange={(e) => setShowHeat(e.target.checked)}
           />
           Heatmap overlay
-          <span className="text-gray-400">(zoom out)</span>
+          <span className="text-gray-400 dark:text-gray-500">(zoom out)</span>
         </label>
 
-        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
             type="checkbox"
             checked={filters.palette === "viridis"}
@@ -515,8 +558,8 @@ export default function MapView() {
         </label>
 
         {/* Assumption sliders — recompute cash flow live */}
-        <details className="mt-3 border-t border-gray-200 pt-2">
-          <summary className="cursor-pointer text-xs font-medium text-gray-700">Assumptions</summary>
+        <details className="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700">
+          <summary className="cursor-pointer text-xs font-medium text-gray-700 dark:text-gray-300">Assumptions</summary>
           <div className="mt-1">
             <Slider
               label="Down payment"
@@ -539,12 +582,12 @@ export default function MapView() {
               onChange={(v) => setFilters((f) => ({ ...f, annualRatePct: v }))}
             />
             <label className={`mt-2 block ${filters.allCash ? "opacity-40" : ""}`}>
-              <span className="text-[11px] text-gray-600">Loan term</span>
+              <span className="text-[11px] text-gray-600 dark:text-gray-400">Loan term</span>
               <select
                 value={filters.termMonths}
                 disabled={filters.allCash}
                 onChange={(e) => setFilters((f) => ({ ...f, termMonths: Number(e.target.value) }))}
-                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm"
+                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value={180}>15 years</option>
                 <option value={360}>30 years</option>
@@ -580,7 +623,7 @@ export default function MapView() {
             <button
               type="button"
               onClick={() => setFilters((f) => ({ ...f, ...CONSERVATIVE }))}
-              className="mt-2 text-[11px] text-blue-600 hover:underline"
+              className="mt-2 text-[11px] text-blue-600 hover:underline dark:text-blue-400"
             >
               Reset to conservative defaults
             </button>
@@ -589,13 +632,15 @@ export default function MapView() {
 
         {/* Legend — colour = DEAL QUALITY (return on capital vs the local area) */}
         <div className="mt-4">
-          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Deal quality</div>
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Deal quality
+          </div>
           <div className="h-3 w-full rounded" style={{ background: gradientCss }} />
-          <div className="mt-1 flex justify-between text-[10px] text-gray-500">
+          <div className="mt-1 flex justify-between text-[10px] text-gray-500 dark:text-gray-400">
             <span>Market-rate</span>
             <span>Local bargain</span>
           </div>
-          <p className="mt-1 text-[10px] leading-tight text-gray-400">
+          <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
             Green = high return for the price <em>and</em> a bargain vs nearby homes. Pins are numbered 1 (best) to N
             (worst) among what&apos;s on screen — it re-ranks as you pan or zoom. Hover a pin for a quick peek; click
             to open its listing.
@@ -605,15 +650,15 @@ export default function MapView() {
 
       {/* Detail card */}
       {(detail || detailLoading) && (
-        <div className="absolute right-4 top-4 z-10 max-h-[calc(100vh-2rem)] w-96 overflow-y-auto rounded-xl bg-white p-5 shadow-2xl">
+        <div className="absolute right-4 top-4 z-10 max-h-[calc(100vh-2rem)] w-96 overflow-y-auto rounded-xl bg-white p-5 shadow-2xl dark:bg-gray-900 dark:shadow-black/50">
           <button
             onClick={() => setDetail(null)}
-            className="float-right text-gray-400 hover:text-gray-700"
+            className="float-right text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200"
             aria-label="Close"
           >
             ✕
           </button>
-          {detailLoading && <p className="text-sm text-gray-500">Loading…</p>}
+          {detailLoading && <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>}
           {detail && <DetailCard detail={detail} deal={dealInfo} />}
         </div>
       )}
@@ -642,7 +687,7 @@ function Slider({
 }) {
   return (
     <label className={`mt-2 block ${disabled ? "opacity-40" : ""}`}>
-      <div className="flex justify-between text-[11px] text-gray-600">
+      <div className="flex justify-between text-[11px] text-gray-600 dark:text-gray-400">
         <span>{label}</span>
         <span className="font-medium tabular-nums">
           {value}
@@ -665,18 +710,21 @@ function Slider({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md bg-gray-50 py-1.5">
-      <div className="text-sm font-semibold text-gray-900">{value}</div>
-      <div className="text-[10px] text-gray-500">{label}</div>
+    <div className="rounded-md bg-gray-50 py-1.5 dark:bg-gray-800">
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{value}</div>
+      <div className="text-[10px] text-gray-500 dark:text-gray-400">{label}</div>
     </div>
   );
 }
 
 function dealLabel(score: number): { text: string; cls: string } {
-  if (score >= 0.75) return { text: "Strong local bargain", cls: "bg-green-100 text-green-700" };
-  if (score >= 0.55) return { text: "Above the local average", cls: "bg-lime-100 text-lime-700" };
-  if (score >= 0.4) return { text: "Around market rate", cls: "bg-yellow-100 text-yellow-700" };
-  return { text: "Below-average deal", cls: "bg-orange-100 text-orange-700" };
+  if (score >= 0.75)
+    return { text: "Strong local bargain", cls: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" };
+  if (score >= 0.55)
+    return { text: "Above the local average", cls: "bg-lime-100 text-lime-700 dark:bg-lime-900/40 dark:text-lime-300" };
+  if (score >= 0.4)
+    return { text: "Around market rate", cls: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300" };
+  return { text: "Below-average deal", cls: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300" };
 }
 
 function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null }) {
@@ -684,11 +732,17 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
   const cf = b.monthlyCashFlow;
   const line = (label: string, val: number, flag?: boolean) => (
     <div className="flex justify-between py-0.5">
-      <span className="text-gray-600">
+      <span className="text-gray-600 dark:text-gray-400">
         {label}
-        {flag && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700">estimated</span>}
+        {flag && (
+          <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+            estimated
+          </span>
+        )}
       </span>
-      <span className="tabular-nums text-gray-900">{val < 0 ? `-$${Math.abs(val)}` : `$${val}`}</span>
+      <span className="tabular-nums text-gray-900 dark:text-gray-100">
+        {val < 0 ? `-$${Math.abs(val)}` : `$${val}`}
+      </span>
     </div>
   );
 
@@ -698,11 +752,11 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
         href={zillowUrl(detail.property.address)}
         target="_blank"
         rel="noopener noreferrer"
-        className="pr-6 text-base font-semibold text-blue-700 hover:underline"
+        className="pr-6 text-base font-semibold text-blue-700 hover:underline dark:text-blue-400"
       >
         {detail.property.address}
       </a>
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-gray-500 dark:text-gray-400">
         {detail.property.propertyType} · {detail.property.bedrooms}bd/{detail.property.bathrooms}ba ·{" "}
         {money(detail.listing.price)}
       </p>
@@ -715,23 +769,25 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
         View on Zillow ↗
       </a>
 
-      <div className="mt-3 rounded-lg bg-gray-50 p-3">
-        <div className="text-xs text-gray-500">Monthly cash flow</div>
-        <div className={`text-2xl font-bold ${cf >= 0 ? "text-green-700" : "text-red-600"}`}>{money(cf)}/mo</div>
+      <div className="mt-3 rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+        <div className="text-xs text-gray-500 dark:text-gray-400">Monthly cash flow</div>
+        <div className={`text-2xl font-bold ${cf >= 0 ? "text-green-700 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+          {money(cf)}/mo
+        </div>
         <div className="mt-1 flex items-center gap-2">
           <span
             className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
               detail.confidence.level === "High"
-                ? "bg-green-100 text-green-700"
+                ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
                 : detail.confidence.level === "Medium"
-                  ? "bg-yellow-100 text-yellow-700"
-                  : "bg-gray-200 text-gray-600"
+                  ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300"
+                  : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
             }`}
           >
             {detail.confidence.level} confidence ({detail.confidence.score})
           </span>
         </div>
-        <p className="mt-1 text-[10px] leading-tight text-gray-500">{detail.confidence.note}</p>
+        <p className="mt-1 text-[10px] leading-tight text-gray-500 dark:text-gray-400">{detail.confidence.note}</p>
       </div>
 
       {/* Investor metrics from data we already have */}
@@ -746,40 +802,52 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
           value={detail.investment.rentToPricePct == null ? "—" : `${detail.investment.rentToPricePct}%`}
         />
       </div>
-      <p className="mt-1 text-[10px] text-gray-400">Cash invested: {money(detail.investment.cashInvested)}</p>
+      <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+        Cash invested: {money(detail.investment.cashInvested)}
+      </p>
 
       {/* Deal quality — why this pin is the colour it is */}
       {deal && (
-        <div className="mt-3 rounded-lg border border-gray-200 p-2.5">
+        <div className="mt-3 rounded-lg border border-gray-200 p-2.5 dark:border-gray-700">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Deal quality</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Deal quality
+            </span>
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${dealLabel(deal.dealScore).cls}`}>
               {dealLabel(deal.dealScore).text}
             </span>
           </div>
-          <p className="mt-1.5 text-[11px] leading-snug text-gray-600">
+          <p className="mt-1.5 text-[11px] leading-snug text-gray-600 dark:text-gray-400">
             {deal.capRatePct}% return on price vs {deal.localCapRatePct}% for nearby homes —{" "}
-            <span className={deal.relAdvantagePct >= 0 ? "font-medium text-green-700" : "font-medium text-red-600"}>
+            <span
+              className={
+                deal.relAdvantagePct >= 0
+                  ? "font-medium text-green-700 dark:text-green-400"
+                  : "font-medium text-red-600 dark:text-red-400"
+              }
+            >
               {deal.relAdvantagePct >= 0 ? "+" : ""}
               {deal.relAdvantagePct}% vs the area
             </span>
             .
           </p>
           {deal.cluster && (
-            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700">
+            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
               ⚠ One of several near-identical nearby units — verify it isn&apos;t an overbuilt complex or an
               inflated rent estimate.
             </p>
           )}
           {deal.belowMarket && (
-            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700">
+            <p className="mt-1 rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-tight text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
               ⚠ Priced well below the area — verify condition / why it&apos;s cheap.
             </p>
           )}
         </div>
       )}
 
-      <h3 className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">How we calculated this</h3>
+      <h3 className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        How we calculated this
+      </h3>
       <div className="mt-1">
         {line("Gross median rent", b.grossRent)}
         {line("− Vacancy reserve", -b.vacancy)}
@@ -789,25 +857,27 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
         {line("− Property tax", -b.propertyTax, detail.flags.taxEstimated)}
         {line("− Insurance", -b.insurance, detail.flags.insuranceEstimated)}
         {line(detail.flags.hoaMissing ? "− HOA (unknown → $0)" : "− HOA", -b.hoa, detail.flags.hoaMissing)}
-        <div className="mt-1 flex justify-between border-t pt-1 font-semibold">
+        <div className="mt-1 flex justify-between border-t pt-1 font-semibold dark:border-gray-700">
           <span>Monthly cash flow</span>
-          <span className={`tabular-nums ${cf >= 0 ? "text-green-700" : "text-red-600"}`}>{money(cf)}</span>
+          <span className={`tabular-nums ${cf >= 0 ? "text-green-700 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+            {money(cf)}
+          </span>
         </div>
       </div>
 
-      <p className="mt-2 text-[11px] text-gray-500">
+      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
         Rent basis: {detail.rent.basis} (${detail.rent.medianRent}/mo).
       </p>
 
-      <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs">
+      <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs dark:bg-blue-950/40">
         <div className="flex justify-between">
-          <span className="text-gray-600">Rough after-tax</span>
-          <span className="font-medium text-gray-900">{money(detail.afterTax.roughMonthly)}/mo</span>
+          <span className="text-gray-600 dark:text-gray-400">Rough after-tax</span>
+          <span className="font-medium text-gray-900 dark:text-gray-100">{money(detail.afterTax.roughMonthly)}/mo</span>
         </div>
-        <p className="mt-1 text-[10px] leading-tight text-gray-500">{detail.afterTax.disclaimer}</p>
+        <p className="mt-1 text-[10px] leading-tight text-gray-500 dark:text-gray-400">{detail.afterTax.disclaimer}</p>
       </div>
 
-      <p className="mt-3 text-[10px] text-gray-400">
+      <p className="mt-3 text-[10px] text-gray-400 dark:text-gray-500">
         Status: {detail.listing.status} · Last verified{" "}
         {new Date(detail.listing.lastVerified).toLocaleDateString()}
       </p>
