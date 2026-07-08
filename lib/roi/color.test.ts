@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyBand,
   colorForCashFlow,
+  interpolatePalette,
   legendStops,
   DEFAULT_GRADIENT_CONFIG,
   type GradientConfig,
@@ -71,6 +72,36 @@ describe("colourblind-safe palette is available", () => {
     const cfg: GradientConfig = { ...DEFAULT_GRADIENT_CONFIG, palette: "viridis" };
     expect(colorForCashFlow(1000, T, cfg).hex).toBe("#440154");
     expect(colorForCashFlow(3000, T, cfg).hex).toBe("#fde725");
+  });
+});
+
+describe("interpolatePalette — spreads colour across a normalised [0,1] domain", () => {
+  it("hits the end stops and the even interior stops", () => {
+    expect(interpolatePalette(0)).toBe("#d73027"); // red at the bottom
+    expect(interpolatePalette(1)).toBe("#006837"); // deep green at the top
+    expect(interpolatePalette(1 / 3)).toBe("#fee08b"); // amber
+    expect(interpolatePalette(2 / 3)).toBe("#1a9850"); // green
+  });
+
+  it("produces distinct colours across the range (a real gradient)", () => {
+    const colors = [0, 0.2, 0.4, 0.6, 0.8, 1].map((t) => interpolatePalette(t));
+    expect(new Set(colors).size).toBe(colors.length);
+  });
+
+  it("clamps out-of-range inputs", () => {
+    expect(interpolatePalette(-1)).toBe("#d73027");
+    expect(interpolatePalette(2)).toBe("#006837");
+  });
+
+  it("flips with the direction config", () => {
+    const flipped: GradientConfig = { ...DEFAULT_GRADIENT_CONFIG, direction: "higher-is-worse" };
+    expect(interpolatePalette(0, flipped)).toBe("#006837"); // low t → what was the top colour
+  });
+
+  it("uses the colourblind palette when selected", () => {
+    const v: GradientConfig = { ...DEFAULT_GRADIENT_CONFIG, palette: "viridis" };
+    expect(interpolatePalette(0, v)).toBe("#440154");
+    expect(interpolatePalette(1, v)).toBe("#fde725");
   });
 });
 

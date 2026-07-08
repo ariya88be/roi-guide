@@ -13,7 +13,13 @@
  */
 import { sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { colorForCashFlow, DEFAULT_GRADIENT_CONFIG, type GradientConfig } from "@/lib/roi/color";
+import {
+  classifyBand,
+  interpolatePalette,
+  DEFAULT_GRADIENT_CONFIG,
+  type GradientConfig,
+} from "@/lib/roi/color";
+import { percentile } from "@/lib/roi/statistics";
 import { computeMonthlyCashFlow } from "@/lib/roi/cashflow";
 import { roughAfterTaxMonthlyCashFlow } from "@/lib/roi/afterTax";
 import { CONSERVATIVE_DEFAULTS } from "@/lib/roi/defaults";
@@ -53,11 +59,21 @@ export interface PinFeature {
   geometry: { type: "Point"; coordinates: [number, number] };
   properties: Record<string, unknown>;
 }
+export interface ColorScale {
+  /** Bottom of the ramp (red): the user's target. */
+  target: number;
+  /** Middle tick, in dollars. */
+  midAnchor: number;
+  /** Top of the ramp (green): dynamic, from the viewport's own distribution. */
+  topAnchor: number;
+}
 export interface PinCollection {
   type: "FeatureCollection";
   features: PinFeature[];
   /** How many active listings the viewport held before the target filter. */
   scanned: number;
+  /** Dollar anchors the client legend labels the gradient with. */
+  colorScale: ColorScale;
 }
 
 type Row = Record<string, unknown>;
@@ -87,8 +103,16 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   `)) as unknown as Row[];
 
   const gradient = q.gradient ?? DEFAULT_GRADIENT_CONFIG;
-  const features: PinFeature[] = [];
 
+  // Pass 1: recompute cash flow and keep the ones that clear the target.
+  interface Matched {
+    r: Row;
+    price: number;
+    monthlyRent: number;
+    cashFlow: number;
+    hoaMissing: boolean;
+  }
+  const matched: Matched[] = [];
   for (const r of rows) {
     const price = n(r.price);
     const monthlyRent = n(r.median_rent);
@@ -100,35 +124,52 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
       assumptions: q.expenseAssumptions,
     });
     if (cf.monthlyCashFlow < q.target) continue; // target filter (Feature A/B)
-
-    const color = colorForCashFlow(cf.monthlyCashFlow, q.target, gradient);
-    features.push({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [n(r.lng), n(r.lat)] },
-      properties: {
-        id: r.id,
-        address: (r.formatted_address as string) ?? (r.city as string) ?? "Unknown",
-        propertyType: r.property_type,
-        bedrooms: r.bedrooms,
-        bathrooms: r.bathrooms,
-        price,
-        cashFlow: Math.round(cf.monthlyCashFlow),
-        medianRent: Math.round(monthlyRent),
-        color: color.hex,
-        band: color.band,
-        confidence: r.confidence_level,
-        confidenceScore: r.confidence_score,
-        deEmphasize: r.de_emphasize,
-        hoaMissing: cf.flags.hoaMissing,
-      },
-    });
+    matched.push({ r, price, monthlyRent, cashFlow: cf.monthlyCashFlow, hoaMissing: cf.flags.hoaMissing });
   }
+
+  // Dynamic top anchor: the 95th percentile of what's actually in view (robust
+  // to one runaway deal), floored at 2× target so there's always real spread.
+  const cfs = matched.map((m) => m.cashFlow);
+  const topAnchor = cfs.length ? Math.max(q.target * 2, percentile(cfs, 0.95)) : q.target * 2;
+  const domain = Math.max(1, topAnchor - q.target);
+
+  // Pass 2: colour each pin by its normalised position in [target, topAnchor].
+  const features: PinFeature[] = matched.map((m) => {
+    const t = Math.max(0, Math.min(1, (m.cashFlow - q.target) / domain));
+    return {
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [n(m.r.lng), n(m.r.lat)] },
+      properties: {
+        id: m.r.id,
+        address: (m.r.formatted_address as string) ?? (m.r.city as string) ?? "Unknown",
+        propertyType: m.r.property_type,
+        bedrooms: m.r.bedrooms,
+        bathrooms: m.r.bathrooms,
+        price: m.price,
+        cashFlow: Math.round(m.cashFlow),
+        medianRent: Math.round(m.monthlyRent),
+        color: interpolatePalette(t, gradient),
+        // Heat/radius weight: keep a floor so even the lowest pin registers.
+        heatWeight: Math.max(0.08, t),
+        band: classifyBand(m.cashFlow, q.target),
+        confidence: m.r.confidence_level,
+        confidenceScore: m.r.confidence_score,
+        deEmphasize: m.r.de_emphasize,
+        hoaMissing: m.hoaMissing,
+      },
+    };
+  });
 
   features.sort((a, b) => (b.properties.cashFlow as number) - (a.properties.cashFlow as number));
   return {
     type: "FeatureCollection",
     features: features.slice(0, q.limit ?? 2000),
     scanned: rows.length,
+    colorScale: {
+      target: q.target,
+      midAnchor: Math.round(q.target + domain / 2),
+      topAnchor: Math.round(topAnchor),
+    },
   };
 }
 

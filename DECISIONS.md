@@ -284,3 +284,36 @@ validation) / 11 skip offline. Live-verified: pins, gradient, $-labels, filters
 
 **Deferred:** clustering (QA §15.I, when we add ZIPs); MapTiler/Protomaps vector
 basemap (keyless OSM raster now); mobile bottom-sheet; Clerk auth.
+
+---
+
+## 2026-07-07 — Real heat map: dynamic color anchor + heat layer (audit fixes 1 & 2)
+
+**Problem (audit):** every pin rendered the same green. Cause: the gradient was
+keyed to fixed target multiples (T/1.5T/2T/3T) and the default target was $100, so
+a market cash-flowing $434–$1,470 sat at 4–15× target — all clamped to the top
+stop. The "heat map" showed no heat.
+
+**Fix 1 — colour spreads across the viewport's own distribution.**
+`interpolatePalette(t)` maps a normalised [0,1] position across the palette.
+`queryPins` now computes a dynamic top anchor = max(2×target, p95(cash flows in
+view)) and colours each pin by `(cf − target)/(topAnchor − target)`. Red = just
+clears target; green = best in view. Returns `colorScale {target, mid, top}` so
+the legend is labelled in DOLLARS (killed the "1.5T/2T" jargon). Default target
+raised to $300. Pin radius now scales with cash flow (`heatWeight`), so magnitude
+reads before colour. API-verified: 17 pins → **15 distinct colours** spanning
+red-orange `#e56d4a` (+$434) → deep green `#006837` (+$1,470).
+
+**Fix 2 — an actual heat layer.** Added a MapLibre `heatmap` layer under the
+pins, weighted by `heatWeight`, fading out as you zoom in (heat at metro scale,
+labelled pins up close), with a toggle. Ramp matches the pin palette.
+
+**Tests:** +5 for `interpolatePalette`; 137 pass / 11 skip offline; typecheck +
+eslint clean.
+
+**Known env issue (not the code):** during live verification MapLibre's web
+worker wedged in the automated Chrome session — a background-only throwaway map
+also failed to load its style, and a fresh tab too, so it is environmental
+(worker/session), not this change. The map rendered fine earlier today; the new
+colour/scale logic is verified via the /api/pins response. Verify visually in a
+normal browser (hard refresh / restart Chrome).

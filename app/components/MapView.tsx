@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { legendStops } from "@/lib/roi/color";
+import { interpolatePalette } from "@/lib/roi/color";
 
 const SAN_BERNARDINO = { lng: -117.3, lat: 34.15, zoom: 12 } as const;
 
@@ -59,7 +59,13 @@ const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toLocaleString()}` : `$${
 
 // Default to all-cash so this cash-flow-tight market shows pins on first load;
 // the financing toggle reveals the (honest) financed picture.
-const INITIAL_FILTERS: Filters = { target: 100, budget: null, allCash: true, palette: "rdylgn" };
+const INITIAL_FILTERS: Filters = { target: 300, budget: null, allCash: true, palette: "rdylgn" };
+
+interface ColorScale {
+  target: number;
+  midAnchor: number;
+  topAnchor: number;
+}
 
 export default function MapView() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -73,6 +79,8 @@ export default function MapView() {
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showHeat, setShowHeat] = useState(true);
+  const [colorScale, setColorScale] = useState<ColorScale | null>(null);
 
   // Keep the ref in sync with state (in an effect, never during render).
   useEffect(() => {
@@ -93,6 +101,7 @@ export default function MapView() {
       const src = map.getSource("pins") as maplibregl.GeoJSONSource | undefined;
       if (src) src.setData(fc);
       setCount(fc.features.length);
+      setColorScale(fc.colorScale ?? null);
     } finally {
       setLoading(false);
     }
@@ -129,14 +138,46 @@ export default function MapView() {
 
     map.on("load", () => {
       map.addSource("pins", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+
+      // Heat layer (under the pins): density of good-cash-flow listings. Fades
+      // out as you zoom in so the labelled pins take over.
+      map.addLayer({
+        id: "pins-heat",
+        type: "heatmap",
+        source: "pins",
+        maxzoom: 15,
+        paint: {
+          "heatmap-weight": ["get", "heatWeight"],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 3],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 10, 22, 14, 42],
+          "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0.85, 15, 0],
+          "heatmap-color": [
+            "interpolate",
+            ["linear"],
+            ["heatmap-density"],
+            0, "rgba(0,0,0,0)",
+            0.2, "rgba(215,48,39,0.5)",
+            0.5, "rgba(254,224,139,0.7)",
+            0.8, "rgba(26,152,80,0.85)",
+            1, "rgba(0,104,55,0.95)",
+          ],
+        },
+      });
+
       map.addLayer({
         id: "pins-circle",
         type: "circle",
         source: "pins",
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 6, 14, 11, 16, 15],
+          // Radius scales with cash flow (heatWeight) as well as zoom, so
+          // magnitude reads before colour does.
+          "circle-radius": [
+            "*",
+            ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 9, 16, 13],
+            ["+", 0.7, ["*", 0.9, ["get", "heatWeight"]]],
+          ],
           "circle-color": ["get", "color"],
-          "circle-opacity": ["case", ["get", "deEmphasize"], 0.55, 0.9],
+          "circle-opacity": ["case", ["get", "deEmphasize"], 0.6, 0.92],
           "circle-stroke-width": 1.5,
           "circle-stroke-color": "#ffffff",
         },
@@ -182,8 +223,18 @@ export default function MapView() {
     if (mapRef.current?.isStyleLoaded()) fetchPins();
   }, [filters, fetchPins]);
 
-  const stops = legendStops({ palette: filters.palette, direction: "higher-is-better", belowTarget: "grey" });
-  const gradientCss = `linear-gradient(90deg, ${stops.map((s) => s.hex).join(", ")})`;
+  // Toggle the heat layer without refetching.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map?.getLayer("pins-heat")) {
+      map.setLayoutProperty("pins-heat", "visibility", showHeat ? "visible" : "none");
+    }
+  }, [showHeat]);
+
+  const gConf = { palette: filters.palette, direction: "higher-is-better" as const, belowTarget: "grey" as const };
+  const gradientCss = `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1]
+    .map((t) => interpolatePalette(t, gConf))
+    .join(", ")})`;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
@@ -242,23 +293,35 @@ export default function MapView() {
         <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
           <input
             type="checkbox"
+            checked={showHeat}
+            onChange={(e) => setShowHeat(e.target.checked)}
+          />
+          Heatmap overlay
+          <span className="text-gray-400">(zoom out)</span>
+        </label>
+
+        <label className="mt-2 flex items-center gap-2 text-xs font-medium text-gray-700">
+          <input
+            type="checkbox"
             checked={filters.palette === "viridis"}
             onChange={(e) => setFilters((f) => ({ ...f, palette: e.target.checked ? "viridis" : "rdylgn" }))}
           />
           Colourblind-safe palette
         </label>
 
-        {/* Legend */}
+        {/* Legend — labelled in dollars from the current viewport's scale */}
         <div className="mt-4">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+            Monthly cash flow
+          </div>
           <div className="h-3 w-full rounded" style={{ background: gradientCss }} />
           <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-            <span>meets (T)</span>
-            <span>1.5T</span>
-            <span>2T</span>
-            <span>3T+</span>
+            <span>{money(colorScale ? colorScale.target : filters.target)}</span>
+            <span>{colorScale ? money(colorScale.midAnchor) : ""}</span>
+            <span>{colorScale ? `${money(colorScale.topAnchor)}+` : ""}</span>
           </div>
           <p className="mt-1 text-[10px] leading-tight text-gray-400">
-            Colour = how far cash flow clears your target. Red still means “passes”.
+            Red = just clears your target; green = best in view.
           </p>
         </div>
       </div>

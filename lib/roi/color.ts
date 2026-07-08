@@ -132,6 +132,23 @@ function evalStops(stops: readonly GradientStop[], ratio: number): RGB {
   return last.color; // unreachable, satisfies the type checker
 }
 
+/**
+ * Interpolate the palette across a NORMALISED position t ∈ [0,1]. Unlike
+ * {@link colorForCashFlow} (which keys colour to fixed target multiples), this
+ * spreads the full palette across whatever domain the caller chooses — used to
+ * colour pins relative to the current viewport's cash-flow distribution so the
+ * map reads as a real heat map instead of one flat colour.
+ */
+export function interpolatePalette(t: number, config: GradientConfig = DEFAULT_GRADIENT_CONFIG): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  const stops = orientStops(PALETTES[config.palette], config.direction);
+  const segments = stops.length - 1;
+  const pos = clamped * segments;
+  const i = Math.min(segments - 1, Math.floor(pos));
+  const frac = pos - i;
+  return toHex(lerpColor(stops[i].color, stops[i + 1].color, frac));
+}
+
 export interface PinColor {
   hex: string;
   band: Band;
