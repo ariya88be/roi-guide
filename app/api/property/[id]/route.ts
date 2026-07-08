@@ -4,7 +4,7 @@
  * Note (Next.js 16): route `params` is now a Promise and must be awaited.
  */
 import { queryPropertyDetail } from "@/lib/pins/query";
-import { parseAssumptions } from "@/lib/http/pinsParams";
+import { safeParseAssumptions } from "@/lib/http/pinsParams";
 import { rateLimit, clientIp } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -20,9 +20,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     return Response.json({ error: "Invalid id" }, { status: 400 });
   }
 
+  const parsed = safeParseAssumptions(new URL(req.url).searchParams);
+  if (!parsed.success) {
+    return Response.json({ error: "Invalid parameters" }, { status: 400 });
+  }
+
   try {
-    const opts = parseAssumptions(new URL(req.url).searchParams);
-    const detail = await queryPropertyDetail(id, opts);
+    const detail = await queryPropertyDetail(id, parsed.data);
     if (!detail) return Response.json({ error: "Not found" }, { status: 404 });
     return Response.json(detail);
   } catch (err) {

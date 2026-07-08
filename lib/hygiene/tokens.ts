@@ -74,3 +74,24 @@ export const LAND_PROPERTY_TYPE_TOKENS = new Set(["land", "vacantland", "lot", "
 
 /** Max units for an included multifamily property; 5+ is deferred (brief §4.Q7). */
 export const MAX_MULTIFAMILY_UNITS = 4;
+
+/**
+ * Known fractional/co-ownership brokerages. Their listing "price" buys a
+ * FRACTION of the home (Pacaso sells 1/8, 1/4, or 1/2 shares) — not the whole
+ * property — which silently invalidates a fee-simple cash-flow calculation:
+ * the mortgage, rent, and cap-rate math all assume you own (and can rent out)
+ * 100% of the unit. A ~$674k "3bd/3ba Malibu oceanfront" listing that is
+ * actually a 1/8th share of a multi-million-dollar home is the textbook case
+ * this catches (found 2026-07-08: 20460 Pacific Coast Hwy, Malibu — listed by
+ * "Pacaso Inc." / mls@pacaso.com, true value ~8x the listed fractional price).
+ * Matched against the normalised listing office/agent name, email domain, and
+ * website host — any one hit is enough to exclude. Kept to brand tokens that
+ * are safe as substrings (an unusual string that won't collide with ordinary
+ * brokerage names — e.g. "ember" is deliberately excluded because it is a
+ * substring of "September"). For unlisted brands, the compensating control is
+ * the implausible-rent/size gate that forces Low+de-emphasis (see
+ * lib/roi/sizeSanity.isImplausibleRentForSize) plus the belowMarket verify flag
+ * on the detail card — an honest "verify why this is cheap" rather than a
+ * silent inclusion.
+ */
+export const FRACTIONAL_OWNERSHIP_BROKERAGE_TOKENS = new Set(["pacaso", "kocomo"]);

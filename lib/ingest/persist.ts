@@ -89,12 +89,35 @@ export async function upsertListing(
         hoaFee: numOrNull(l.hoa?.fee),
         lastSeen: now, // firstSeen is intentionally NOT touched on update
         isActive,
+        // Clear any stale removed_date a prior deactivation set — otherwise a
+        // listing that fails hygiene (deactivated, removed_date stamped) and
+        // later passes again would be is_active=true with a removed_date.
+        removedDate: isActive ? null : sql`listings.removed_date`,
         missedSyncCount: 0,
         updatedAt: sql`now()`,
       },
     })
     .returning({ id: listings.id });
   return row.id;
+}
+
+/**
+ * Deactivate any existing active listing for a property (by RentCast id).
+ * Used when a listing is fetched from the feed but now FAILS the hygiene screen
+ * (e.g. it's a fractional/co-ownership listing, or its type was re-classified):
+ * upsert only ever runs for listings that PASS, so without this a row ingested
+ * before a new exclusion rule existed would keep is_active=true forever and
+ * stay on the map with a misleading number. A no-op when no such row exists.
+ */
+export async function deactivateListingByRentcastId(db: Database, rentcastId: string): Promise<void> {
+  await db.execute(sql`
+    update listings
+    set is_active = false, removed_date = current_date, updated_at = now()
+    from properties p
+    where listings.property_id = p.id
+      and p.rentcast_id = ${rentcastId}
+      and listings.is_active = true
+  `);
 }
 
 /** Insert or update the computed ROI for a listing. */
@@ -137,6 +160,8 @@ export async function upsertMarketSnapshot(
     medianRent: String(rd.medianRent),
     minRent: numOrNull(rd.minRent),
     maxRent: numOrNull(rd.maxRent),
+    // Persisted so the implausible-rent/size gate still fires on a cache HIT.
+    medianRentPerSquareFoot: numOrNull(rd.medianRentPerSquareFoot),
     // Stored verbatim so a cache HIT can still bedroom-match (see getCachedOrLiveMarket).
     dataByBedrooms: rd.dataByBedrooms ?? null,
   };

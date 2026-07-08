@@ -17,6 +17,7 @@ import {
   IMPLIED_UNIT_COUNTS,
   LAND_PROPERTY_TYPE_TOKENS,
   MAX_MULTIFAMILY_UNITS,
+  FRACTIONAL_OWNERSHIP_BROKERAGE_TOKENS,
   normalizeToken,
 } from "./tokens";
 
@@ -29,7 +30,8 @@ export type ExclusionCode =
   | "senior-restricted"
   | "inactive-flag"
   | "stale-last-seen"
-  | "missed-syncs";
+  | "missed-syncs"
+  | "fractional-ownership";
 
 export interface ExclusionReason {
   code: ExclusionCode;
@@ -51,6 +53,16 @@ export interface ScreenableListing {
   lastSeen?: Date | null;
   /** Consecutive syncs the listing was absent from the feed. */
   missedSyncCount?: number | null;
+  /** Listing office/agent name, website, and email — all six checked against
+   * known fractional/co-ownership brokerages (e.g. Pacaso). RentCast exposes
+   * name/website/email on BOTH office and agent, so we screen every one; a
+   * fractional brokerage can surface on any of them. */
+  listingOfficeName?: string | null;
+  listingOfficeWebsite?: string | null;
+  listingOfficeEmail?: string | null;
+  listingAgentName?: string | null;
+  listingAgentWebsite?: string | null;
+  listingAgentEmail?: string | null;
 }
 
 export interface HygieneConfig {
@@ -115,6 +127,37 @@ function checkPropertyType(propertyType?: string | null, unitCount?: number | nu
   return null;
 }
 
+/**
+ * A fractional/co-ownership listing (Pacaso and similar) sells a SHARE of the
+ * home — the price is not what it costs to own (or rent out) the whole unit,
+ * so it must never enter the cash-flow engine as if it were a normal sale.
+ * Matched by substring against the normalised office name/website/agent email
+ * since real values are punctuated ("Pacaso Inc.", "mls@pacaso.com").
+ */
+function checkFractionalOwnership(listing: ScreenableListing): ExclusionReason | null {
+  const candidates = [
+    listing.listingOfficeName,
+    listing.listingOfficeWebsite,
+    listing.listingOfficeEmail,
+    listing.listingAgentName,
+    listing.listingAgentWebsite,
+    listing.listingAgentEmail,
+  ];
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const token = normalizeToken(raw);
+    for (const brokerage of FRACTIONAL_OWNERSHIP_BROKERAGE_TOKENS) {
+      if (token.includes(brokerage)) {
+        return {
+          code: "fractional-ownership",
+          detail: `Listed by a fractional/co-ownership brokerage ("${raw}") — the price buys a share of the home, not the whole property.`,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function checkFreshness(listing: ScreenableListing, config: HygieneConfig, now: Date): ExclusionReason[] {
   const reasons: ExclusionReason[] = [];
 
@@ -162,6 +205,9 @@ export function screenListing(
   if (listing.seniorRestricted === true) {
     reasons.push({ code: "senior-restricted", detail: "Age-restricted (55+) community." });
   }
+
+  const fractionalReason = checkFractionalOwnership(listing);
+  if (fractionalReason) reasons.push(fractionalReason);
 
   reasons.push(...checkFreshness(listing, config, now));
 

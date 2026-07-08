@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isAtypicallySmall, minPlausibleSquareFootage } from "./sizeSanity";
+import { isAtypicallySmall, minPlausibleSquareFootage, isImplausibleRentForSize } from "./sizeSanity";
 
 describe("isAtypicallySmall — the Beverly Glen regression (207-266 sqft '1BR' condos)", () => {
   it("flags a 207 sqft 1-bedroom (the observed real case) as atypically small", () => {
@@ -25,6 +25,30 @@ describe("isAtypicallySmall — the Beverly Glen regression (207-266 sqft '1BR' 
   it("treats missing bedroom count as a 1BR floor", () => {
     expect(isAtypicallySmall(200, null)).toBe(true);
     expect(isAtypicallySmall(500, null)).toBe(false);
+  });
+});
+
+describe("isImplausibleRentForSize — big-unit ZIP median applied to a tiny unit", () => {
+  it("flags a 440 sqft unit assigned $6,000/mo against a $3.5/sqft ZIP norm", () => {
+    // 6000/440 = $13.6/sqft ⇒ ~3.9x the ZIP median ⇒ implausible.
+    expect(isImplausibleRentForSize(6000, 440, 3.5)).toBe(true);
+  });
+
+  it("does not flag a plausible rent/sqft", () => {
+    // 2600/1000 = $2.6/sqft, below the $3.5 norm.
+    expect(isImplausibleRentForSize(2600, 1000, 3.5)).toBe(false);
+  });
+
+  it("does not flag a modest premium within the ratio headroom", () => {
+    // 5000/1000 = $5/sqft ≈ 1.43x the $3.5 norm ⇒ under the 2.5x gate.
+    expect(isImplausibleRentForSize(5000, 1000, 3.5)).toBe(false);
+  });
+
+  it("never flags when any input is missing — no guessing from absence", () => {
+    expect(isImplausibleRentForSize(6000, 440, null)).toBe(false);
+    expect(isImplausibleRentForSize(6000, null, 3.5)).toBe(false);
+    expect(isImplausibleRentForSize(null, 440, 3.5)).toBe(false);
+    expect(isImplausibleRentForSize(6000, 0, 3.5)).toBe(false);
   });
 });
 

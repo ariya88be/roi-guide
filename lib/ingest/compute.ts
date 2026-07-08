@@ -9,8 +9,30 @@
 
 import { computeMonthlyCashFlow } from "@/lib/roi/cashflow";
 import { CONSERVATIVE_DEFAULTS } from "@/lib/roi/defaults";
-import { isAtypicallySmall } from "@/lib/roi/sizeSanity";
+import { isAtypicallySmall, isImplausibleRentForSize } from "@/lib/roi/sizeSanity";
+import { normalizeToken } from "@/lib/hygiene";
 import type { FinancingInput } from "@/lib/roi/amortization";
+
+/**
+ * Property-type tokens whose sale price is for a WHOLE building of 2+ doors but
+ * whose Phase-1 rent basis is a single ZIP per-unit median — so the cash flow
+ * is systematically wrong (rent of one door vs mortgage/tax on the whole
+ * building). We can't price these correctly until a per-door rent basis exists,
+ * so they are always Low confidence + de-emphasised (the ranking then keeps
+ * them out of the turnkey top; see lib/pins/query.ts qualityFactor).
+ */
+const MULTI_UNIT_TYPE_TOKENS = new Set([
+  "multifamily",
+  "duplex",
+  "triplex",
+  "fourplex",
+  "quadruplex",
+]);
+
+function isMultiUnitType(propertyType: string | null | undefined): boolean {
+  if (!propertyType) return false;
+  return MULTI_UNIT_TYPE_TOKENS.has(normalizeToken(propertyType));
+}
 
 /** Version tag for the assumption set used; lets us recompute stale rows later. */
 export const ASSUMPTIONS_VERSION = "conservative-defaults-v1";
@@ -45,6 +67,14 @@ export interface ListingRoiInput {
    * an atypically small unit (see lib/roi/sizeSanity). */
   squareFootage?: number | null;
   bedrooms?: number | null;
+  /** Property type — multi-unit types can't be priced with a per-unit rent
+   * basis, so they're forced Low + de-emphasised (see isMultiUnitType). */
+  propertyType?: string | null;
+  /** True when the rent basis was matched to the listing's bedroom count;
+   * false = it fell back to the coarser ZIP-overall median (lower confidence). */
+  bedroomMatched?: boolean;
+  /** ZIP median rent per sqft — used to catch an implausible rent/sqft basis. */
+  zipMedianRentPerSqft?: number | null;
 }
 
 export interface ComputedRoiRecord {
@@ -83,10 +113,25 @@ export function computeListingRoi(input: ListingRoiInput): ComputedRoiRecord {
   });
 
   let conf = coarseZipConfidence(input.sampleSize);
-  // A unit too small for its bedroom count breaks the "bedroom-matched ZIP
-  // median" assumption entirely — force Low regardless of how many comps the
-  // ZIP has, since the comps aren't for units like this one.
-  if (isAtypicallySmall(input.squareFootage, input.bedrooms)) {
+
+  // The rent basis fell back from bedroom-matched to the coarse ZIP-overall
+  // median (e.g. bedrooms unknown, or the ZIP has no per-bedroom breakdown) —
+  // a materially weaker basis, so it can't stay "Medium".
+  if (input.bedroomMatched === false) {
+    conf = { score: Math.min(conf.score, 35), level: "Low", deEmphasize: conf.deEmphasize };
+  }
+
+  // Each of these means "the ZIP per-unit median clearly does not fit this
+  // listing", so the resulting cash flow is not to be trusted — force Low +
+  // de-emphasise (the map ranking then keeps it out of the turnkey top):
+  //  - a unit too small for its bedroom count (micro-unit);
+  //  - a rent/sqft implausibly high vs the ZIP norm (big-unit median on a tiny unit);
+  //  - a multi-unit building priced whole but rented as one door.
+  const basisClearlyWrong =
+    isAtypicallySmall(input.squareFootage, input.bedrooms) ||
+    isImplausibleRentForSize(input.monthlyRent, input.squareFootage, input.zipMedianRentPerSqft) ||
+    isMultiUnitType(input.propertyType);
+  if (basisClearlyWrong) {
     conf = { score: Math.min(conf.score, 20), level: "Low", deEmphasize: true };
   }
 

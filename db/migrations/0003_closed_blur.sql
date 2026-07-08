@@ -1,0 +1,1 @@
+ALTER TABLE "market_snapshots" ADD COLUMN "median_rent_per_square_foot" numeric(10, 4);

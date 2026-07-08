@@ -104,6 +104,41 @@ describe("scoreDeals — relAdvantage sign with a non-positive local baseline (r
   });
 });
 
+describe("scoreDeals — implausibly high cap rate is treated as suspect, not top-of-market", () => {
+  // A pool of normal ~4% homes plus ONE with a 60% cap rate (a broken rent
+  // basis / fractional price artifact). The absolute-efficiency score must NOT
+  // let that lone out-of-distribution cap rate reach ≈1.
+  const items: DealInput[] = [];
+  for (let i = 0; i < 8; i++) {
+    items.push({ id: `norm${i}`, lat: 34.5 + i * 0.02, lng: -117.0, price: 500_000, capRate: 0.04 });
+  }
+  items.push({ id: "absurd", lat: 34.9, lng: -117.0, price: 60_000, capRate: 0.6 });
+  const r = scoreDeals(items);
+
+  it("does not award a near-perfect dealScore to an absurd cap rate", () => {
+    expect(r.get("absurd")!.capRate).toBeGreaterThan(DEFAULT_DEAL_CONFIG.implausibleCapRate);
+    // Local advantage can still lift it some, but the absolute component is capped
+    // at neutral, so it can't reach the ≈1 a raw percentile would have given.
+    expect(r.get("absurd")!.dealScore).toBeLessThan(0.95);
+  });
+});
+
+describe("scoreDeals — percentile uses midrank so an all-tied market is neutral, not bottom", () => {
+  const items: DealInput[] = [];
+  for (let i = 0; i < 6; i++) {
+    // Spread far apart so no cluster; identical cap rates ⇒ a fully-tied market.
+    items.push({ id: `t${i}`, lat: 34.0 + i * 0.5, lng: -117.0, price: 500_000, capRate: 0.05 });
+  }
+  const r = scoreDeals(items);
+
+  it("scores a tied market at the neutral midpoint (≈0.5), not 0", () => {
+    for (let i = 0; i < 6; i++) {
+      expect(r.get(`t${i}`)!.dealScore).toBeGreaterThan(0.45);
+      expect(r.get(`t${i}`)!.dealScore).toBeLessThan(0.55);
+    }
+  });
+});
+
 describe("scoreDeals — same-building cluster (the Beverly Glen micro-unit regression)", () => {
   // Three units in the SAME building, prices varying 15-30% (a real observed
   // case: 207-266 sqft "condos" at $50k/$65k/$75k), which the price+capRate

@@ -133,6 +133,11 @@ export const marketSnapshots = pgTable(
     medianRent: numeric("median_rent", { precision: 10, scale: 2 }),
     minRent: numeric("min_rent", { precision: 10, scale: 2 }),
     maxRent: numeric("max_rent", { precision: 10, scale: 2 }),
+    /** ZIP median rent per square foot — the basis for the implausible-rent/size
+     * gate (lib/roi/sizeSanity.isImplausibleRentForSize). Persisted so a cache
+     * HIT (the common ingestRadius path) still supplies it, instead of the gate
+     * silently going inert because the reconstructed market lacked this field. */
+    medianRentPerSquareFoot: numeric("median_rent_per_square_foot", { precision: 10, scale: 4 }),
     /** RentCast's per-bedroom rent breakdown, verbatim — lets a cache HIT still
      * preserve bedroom-matched rent (see mapRentcast.pickBedroomMedianRent)
      * instead of silently regressing to the ZIP-overall median. */

@@ -53,6 +53,22 @@ export type RentalMarket = z.infer<typeof RentalMarketSchema>;
 export const HoaSchema = z.object({ fee: z.number() }).catchall(z.unknown());
 
 /**
+ * Listing agent/office sub-object. Used by the hygiene screen to detect
+ * fractional/co-ownership brokerages (e.g. Pacaso) — their listing price is
+ * for a FRACTION of the home (e.g. 1/8th), not the whole property, which
+ * silently invalidates the entire cash-flow calculation if treated as a
+ * normal fee-simple sale (see lib/hygiene/tokens.ts).
+ */
+export const ListingContactSchema = z
+  .object({
+    name: z.string().optional(),
+    phone: z.string().optional(),
+    email: z.string().optional(),
+    website: z.string().optional(),
+  })
+  .catchall(z.unknown());
+
+/**
  * A single for-sale listing. GET /v1/listings/sale returns an array of these.
  * Only lat/long, price, status and identity are required; property attributes
  * are optional because real records are patchy — the engine flags what's
@@ -84,6 +100,8 @@ export const SaleListingSchema = z
     lastSeenDate: z.string().optional(),
     daysOnMarket: z.number().optional(),
     hoa: HoaSchema.nullish(),
+    listingAgent: ListingContactSchema.nullish(),
+    listingOffice: ListingContactSchema.nullish(),
   })
   .catchall(z.unknown());
 

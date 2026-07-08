@@ -12,7 +12,13 @@ import type { Database } from "@/db/client";
 import type { SaleListing, RentalMarket } from "@/lib/providers/rentcast";
 import { toScreenableListing, pickBedroomMedianRent } from "./mapRentcast";
 import { computeListingRoi } from "./compute";
-import { upsertProperty, upsertListing, upsertComputedRoi, upsertMarketSnapshot } from "./persist";
+import {
+  upsertProperty,
+  upsertListing,
+  upsertComputedRoi,
+  upsertMarketSnapshot,
+  deactivateListingByRentcastId,
+} from "./persist";
 
 /**
  * Read a ZIP's rent market from `market_snapshots` if a fresh-enough row
@@ -32,6 +38,7 @@ async function getCachedOrLiveMarket(
   const cached = (await db.execute(sql`
     select average_rent::float as average_rent, median_rent::float as median_rent,
            min_rent::float as min_rent, max_rent::float as max_rent,
+           median_rent_per_square_foot::float as median_rent_per_square_foot,
            active_rental_listings, data_by_bedrooms
     from market_snapshots
     where zip_code = ${zip} and snapshot_date >= (${snapshotDate}::date - ${maxAgeDays}::int)
@@ -42,6 +49,7 @@ async function getCachedOrLiveMarket(
     median_rent: number;
     min_rent: number | null;
     max_rent: number | null;
+    median_rent_per_square_foot: number | null;
     active_rental_listings: number | null;
     data_by_bedrooms: RentalMarket["rentalData"]["dataByBedrooms"] | null;
   }>;
@@ -55,6 +63,8 @@ async function getCachedOrLiveMarket(
         medianRent: r.median_rent,
         minRent: r.min_rent ?? undefined,
         maxRent: r.max_rent ?? undefined,
+        // Reconstructed so the implausible-rent/size gate isn't inert on a cache HIT.
+        medianRentPerSquareFoot: r.median_rent_per_square_foot ?? undefined,
         totalListings: r.active_rental_listings ?? undefined,
         dataByBedrooms: r.data_by_bedrooms ?? undefined,
       },
@@ -123,6 +133,9 @@ export async function ingestZip(params: IngestZipParams): Promise<IngestSummary>
   for (const listing of raw) {
     const screen = screenListing(toScreenableListing(listing, now), now);
     if (!screen.render) {
+      // Still in the feed but now fails hygiene — deactivate any stale row we
+      // ingested under an older ruleset so it stops rendering.
+      await deactivateListingByRentcastId(db, listing.id);
       screenedOut++;
       continue;
     }
@@ -140,6 +153,9 @@ export async function ingestZip(params: IngestZipParams): Promise<IngestSummary>
       sampleSize: pick.sampleSize,
       squareFootage: listing.squareFootage ?? null,
       bedrooms: listing.bedrooms ?? null,
+      propertyType: listing.propertyType ?? null,
+      bedroomMatched: pick.bedroomMatched,
+      zipMedianRentPerSqft: market.rentalData.medianRentPerSquareFoot ?? null,
     });
 
     const propertyId = await upsertProperty(db, listing);
@@ -315,6 +331,8 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
   for (const listing of priced) {
     const screen = screenListing(toScreenableListing(listing, now), now);
     if (!screen.render) {
+      // Still in the feed but now fails hygiene — deactivate any stale row.
+      await deactivateListingByRentcastId(db, listing.id);
       screenedOut++;
       continue;
     }
@@ -336,6 +354,9 @@ export async function ingestRadius(params: IngestRadiusParams): Promise<RadiusSu
         sampleSize: pick.sampleSize,
         squareFootage: listing.squareFootage ?? null,
         bedrooms: listing.bedrooms ?? null,
+        propertyType: listing.propertyType ?? null,
+        bedroomMatched: pick.bedroomMatched,
+        zipMedianRentPerSqft: market.rentalData.medianRentPerSquareFoot ?? null,
       });
       const propertyId = await upsertProperty(db, listing);
       const listingId = await upsertListing(db, propertyId, listing, now);

@@ -73,6 +73,13 @@ export interface DealConfig {
   weightAbsolute: number;
   /** Score multiplier applied to flagged clusters (dampens false hot-spots). */
   clusterPenalty: number;
+  /**
+   * Cap rate above which the return is almost certainly a data artifact (a
+   * broken rent basis, a fractional price, a mistyped sqft) rather than a real
+   * turnkey yield. Beyond this the absolute-efficiency score is capped so an
+   * out-of-distribution cap rate can't alone rocket a listing to dealScore≈1.
+   */
+  implausibleCapRate: number;
 }
 
 export const DEFAULT_DEAL_CONFIG: Readonly<DealConfig> = Object.freeze({
@@ -86,6 +93,9 @@ export const DEFAULT_DEAL_CONFIG: Readonly<DealConfig> = Object.freeze({
   relScale: 0.4,
   weightAbsolute: 0.5,
   clusterPenalty: 0.65,
+  // ~18% cap rate. A conservatively-underwritten LA rental almost never clears
+  // this honestly; beyond it, treat the return as suspect, not exceptional.
+  implausibleCapRate: 0.18,
 });
 
 /** Approx local distance in miles (fine at neighborhood scale). */
@@ -106,15 +116,24 @@ function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
 
-/** Percentile rank (0..1) of `value` within `sorted` (ascending). */
+/**
+ * Percentile rank (0..1) of `value` within `sorted` (ascending), using the
+ * MIDRANK convention for ties so a market of identical cap rates maps every
+ * item to the neutral 0.5 (matching the length<=1 guard) rather than 0 — a
+ * min-rank would wrongly score a whole tied market as bottom-of-market.
+ */
 function percentileRank(sorted: number[], value: number): number {
-  if (sorted.length <= 1) return 0.5;
-  let lo = 0;
+  const nn = sorted.length;
+  if (nn <= 1) return 0.5;
+  let below = 0;
+  let equal = 0;
   for (const v of sorted) {
-    if (v < value) lo++;
+    if (v < value) below++;
+    else if (v === value) equal++;
     else break;
   }
-  return lo / (sorted.length - 1);
+  const rank = below + (equal > 0 ? (equal - 1) / 2 : 0);
+  return rank / (nn - 1);
 }
 
 /**
@@ -166,7 +185,10 @@ export function scoreDeals(
     const relAdvantage = (it.capRate - localMedianCap) / Math.max(Math.abs(localMedianCap), MIN_CAP_DENOM);
 
     // Absolute capital-efficiency score: percentile of cap rate across the market.
-    const absScore = percentileRank(capsSorted, it.capRate);
+    // A cap rate past the plausibility ceiling is treated as suspect data, not a
+    // top-of-market deal — cap the absolute score so it can't max out alone.
+    const absScore =
+      it.capRate > config.implausibleCapRate ? 0.5 : percentileRank(capsSorted, it.capRate);
     // Local-advantage score: relAdvantage mapped so 0 → 0.5, ±relScale → 1/0.
     const relScore = clamp01((relAdvantage + config.relScale) / (2 * config.relScale));
 
@@ -174,6 +196,15 @@ export function scoreDeals(
 
     const cluster = clusterCount >= config.clusterMinCount || sameBuildingCount >= config.sameBuildingMinCount;
     if (cluster) dealScore *= config.clusterPenalty;
+    // `belowMarket` (much cheaper than neighbours) is surfaced as a VERIFY flag,
+    // not a score penalty: cheapness alone is exactly the capital-efficiency
+    // edge this model rewards (a $400k home matching a $700k home's return
+    // SHOULD read greener). The genuinely-broken cheap cases — micro-units,
+    // multi-unit-priced-whole, implausible rent/sqft, fractional shares — are
+    // demoted precisely where they're detected: forced Low+de-emphasis at
+    // ingest (lib/ingest/compute.ts) which the pin ranking then honours
+    // (lib/pins/query.ts qualityFactor). Penalising cheapness itself would
+    // punish the good bargains along with the bad.
     const belowMarket = it.price < config.belowMarketRatio * localMedianPrice;
 
     results.set(it.id, {

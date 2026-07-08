@@ -36,4 +36,58 @@ describe("computeListingRoi", () => {
     expect(r.monthlyCashFlow).toBeCloseTo(911.33, 1);
     expect(r.cashFlowSign).toBe("positive");
   });
+
+  it("forces Low + de-emphasise for a multi-unit type (per-unit rent vs whole-building price)", () => {
+    const r = computeListingRoi({
+      price: 900_000,
+      monthlyRent: 2600,
+      monthlyHoa: 0,
+      sampleSize: 30, // would be Medium
+      propertyType: "Multi-Family",
+    });
+    expect(r.confidenceLevel).toBe("Low");
+    expect(r.deEmphasize).toBe(true);
+  });
+
+  it("does not de-emphasise a normal single-family with a healthy sample", () => {
+    const r = computeListingRoi({
+      price: 500_000,
+      monthlyRent: 2600,
+      monthlyHoa: 0,
+      sampleSize: 30,
+      propertyType: "Single Family",
+      squareFootage: 1600,
+      bedrooms: 3,
+      bedroomMatched: true,
+      zipMedianRentPerSqft: 2.5,
+    });
+    expect(r.confidenceLevel).toBe("Medium");
+    expect(r.deEmphasize).toBe(false);
+  });
+
+  it("forces Low + de-emphasise when the rent basis implies an absurd rent/sqft", () => {
+    // 440 sqft studio handed the ZIP's $6,000 overall median ⇒ ~$13.6/sqft vs a $3.5 norm.
+    const r = computeListingRoi({
+      price: 370_000,
+      monthlyRent: 6000,
+      monthlyHoa: 0,
+      sampleSize: 30,
+      squareFootage: 440,
+      bedrooms: 0,
+      zipMedianRentPerSqft: 3.5,
+    });
+    expect(r.confidenceLevel).toBe("Low");
+    expect(r.deEmphasize).toBe(true);
+  });
+
+  it("caps confidence at Low when the rent basis fell back off bedroom-match", () => {
+    const r = computeListingRoi({
+      price: 500_000,
+      monthlyRent: 2600,
+      monthlyHoa: 0,
+      sampleSize: 30, // would be Medium if bedroom-matched
+      bedroomMatched: false,
+    });
+    expect(r.confidenceLevel).toBe("Low");
+  });
 });

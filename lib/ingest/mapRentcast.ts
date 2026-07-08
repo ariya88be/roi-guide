@@ -23,6 +23,12 @@ export function toScreenableListing(listing: SaleListing, now: Date): Screenable
     isActive: normalizeToken(listing.status) === "active",
     lastSeen: now,
     missedSyncCount: 0,
+    listingOfficeName: listing.listingOffice?.name ?? null,
+    listingOfficeWebsite: listing.listingOffice?.website ?? null,
+    listingOfficeEmail: listing.listingOffice?.email ?? null,
+    listingAgentName: listing.listingAgent?.name ?? null,
+    listingAgentWebsite: listing.listingAgent?.website ?? null,
+    listingAgentEmail: listing.listingAgent?.email ?? null,
   };
 }
 
@@ -48,7 +54,10 @@ export function pickBedroomMedianRent(market: RentalMarket, bedrooms?: number | 
 
   if (beds != null && rd.dataByBedrooms) {
     const seg = rd.dataByBedrooms.find((d) => d.bedrooms === beds);
-    const segRent = seg?.medianRent ?? seg?.averageRent ?? null;
+    // MEDIAN only — never silently substitute the mean under the "median" name
+    // (the whole point of the median basis is to resist the outlier a mean
+    // absorbs). If this segment has no median, fall through to the ZIP overall.
+    const segRent = seg?.medianRent ?? null;
     if (segRent != null) {
       return { rent: segRent, sampleSize: seg?.totalListings ?? null, bedroomMatched: true };
     }

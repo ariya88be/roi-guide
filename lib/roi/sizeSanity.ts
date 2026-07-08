@@ -41,3 +41,31 @@ export function isAtypicallySmall(
   if (squareFootage == null || squareFootage <= 0) return false;
   return squareFootage < minPlausibleSquareFootage(bedrooms);
 }
+
+/**
+ * How many times the ZIP's median rent-per-square-foot the applied rent basis
+ * may imply before we call it implausible. A tiny unit handed a big-unit ZIP
+ * median rent (observed: a 440 sqft studio assigned the ZIP's $6,000 overall
+ * median → ~$13.6/sqft vs a ~$3.5/sqft ZIP norm) manufactures a fake yield.
+ * Generous headroom (real premium micro-units exist) — this is a "clearly
+ * wrong", not "above average", threshold.
+ */
+export const MAX_PLAUSIBLE_RENT_PSF_RATIO = 2.5;
+
+/**
+ * True when the applied monthly rent implies a rent-per-sqft far above the
+ * ZIP's own median rent-per-sqft — i.e. the ZIP bedroom/overall median clearly
+ * doesn't fit this unit and the resulting cash flow is not to be trusted.
+ * Returns false whenever any input is missing (never penalise absent data).
+ */
+export function isImplausibleRentForSize(
+  monthlyRent: number | null | undefined,
+  squareFootage: number | null | undefined,
+  zipMedianRentPerSqft: number | null | undefined,
+): boolean {
+  if (monthlyRent == null || monthlyRent <= 0) return false;
+  if (squareFootage == null || squareFootage <= 0) return false;
+  if (zipMedianRentPerSqft == null || zipMedianRentPerSqft <= 0) return false;
+  const impliedPsf = monthlyRent / squareFootage;
+  return impliedPsf > MAX_PLAUSIBLE_RENT_PSF_RATIO * zipMedianRentPerSqft;
+}

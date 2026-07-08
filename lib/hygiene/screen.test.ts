@@ -108,6 +108,57 @@ describe("hygiene — 2–4 unit multifamily cap", () => {
   });
 });
 
+describe("hygiene — fractional / co-ownership brokerages (Pacaso etc.)", () => {
+  it("excludes a listing whose office is a fractional brokerage", () => {
+    const r = screen({ listingOfficeName: "Pacaso Inc." });
+    expect(r.render).toBe(false);
+    expect(r.reasons.some((x) => x.code === "fractional-ownership")).toBe(true);
+  });
+
+  it("excludes on the office website host", () => {
+    expect(screen({ listingOfficeWebsite: "https://www.pacaso.com/" }).render).toBe(false);
+  });
+
+  it("excludes on the agent email domain", () => {
+    expect(screen({ listingAgentEmail: "mls@pacaso.com" }).render).toBe(false);
+  });
+
+  it("excludes on the AGENT name / office email too (all six contact fields screened)", () => {
+    expect(screen({ listingAgentName: "Pacaso Listing Agent" }).render).toBe(false);
+    expect(screen({ listingOfficeEmail: "hello@pacaso.com" }).render).toBe(false);
+    expect(screen({ listingAgentWebsite: "https://pacaso.com/x" }).render).toBe(false);
+  });
+
+  it("excludes another known fractional brand (Kocomo)", () => {
+    expect(screen({ listingOfficeName: "Kocomo Homes" }).render).toBe(false);
+  });
+
+  it("does not exclude a normal brokerage", () => {
+    expect(
+      screen({ listingOfficeName: "Coldwell Banker Realty", listingAgentEmail: "agent@coldwellbanker.com" }).render,
+    ).toBe(true);
+  });
+
+  it("does not false-positive on an ordinary name that merely contains a common substring", () => {
+    // 'ember' (a fractional brand we deliberately DON'T list) is a substring of
+    // 'September' — a listing office we must not wrongly exclude.
+    expect(screen({ listingOfficeName: "September Realty Group" }).render).toBe(true);
+  });
+
+  it("ignores absent office/agent fields", () => {
+    expect(
+      screen({
+        listingOfficeName: null,
+        listingOfficeWebsite: null,
+        listingOfficeEmail: null,
+        listingAgentName: null,
+        listingAgentWebsite: null,
+        listingAgentEmail: null,
+      }).render,
+    ).toBe(true);
+  });
+});
+
 describe("hygiene — senior (55+) restriction", () => {
   it("excludes an age-restricted listing", () => {
     const r = screen({ seniorRestricted: true });

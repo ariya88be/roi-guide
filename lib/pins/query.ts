@@ -82,6 +82,13 @@ export interface PinCollection {
   /** How many active listings the viewport held before the target filter. */
   scanned: number;
   /**
+   * Eligible candidates actually considered for the target: `scanned` minus
+   * non-positive prices and (when houseOnly is on) the excluded property types.
+   * This is the honest denominator for "N of M clear your target" — using
+   * `scanned` would count condos the houseOnly filter already removed.
+   */
+  eligible: number;
+  /**
    * True when `scanned` hit SCAN_CAP — the viewport holds AT LEAST this many
    * active listings, `scanned` is a lower bound, not the true total. Ordered
    * by confidence then price, so a truncation keeps the more reliable /
@@ -92,8 +99,22 @@ export interface PinCollection {
 
 type Row = Record<string, unknown>;
 const n = (v: unknown): number => Number(v);
+const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 /** Safety cap on rows pulled before the in-app target filter. */
 const SCAN_CAP = 5000;
+
+/**
+ * How much to demote a listing's deal score for data-quality reasons the
+ * spatial deal model can't see (they come from the confidence engine, not
+ * geometry). Compounding multipliers so several flags stack. Keeps a clean,
+ * high-confidence turnkey home at full score while sinking flagged ones.
+ */
+function qualityFactor(r: Row): number {
+  let f = 1;
+  if (r.de_emphasize === true) f *= 0.5; // engine already distrusts this row's basis
+  if (String(r.confidence_level) === "Low") f *= 0.75; // thin/ill-fitting comps
+  return f;
+}
 
 export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   const db = getDb();
@@ -163,6 +184,14 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
   for (const s of scored) {
     if (s.cashFlow < q.target) continue; // target filter (Feature A/B)
     const deal = deals.get(s.r.id as string)!;
+    // Data-quality demotion: a listing our own confidence engine flags
+    // (de-emphasised, or Low confidence because the rent basis probably doesn't
+    // fit the unit — micro-units, multi-family, non-bedroom-matched fallbacks)
+    // must not out-rank or out-colour a clean turnkey home. deal.dealScore is
+    // capital efficiency + local advantage; multiplying it by this factor is
+    // what lets a flagged pin sink in BOTH the ranking and the colour ramp,
+    // instead of only dimming (opacity) while still sitting at rank #1.
+    const effScore = clamp01(deal.dealScore * qualityFactor(s.r));
     features.push({
       type: "Feature",
       geometry: { type: "Point", coordinates: [n(s.r.lng), n(s.r.lat)] },
@@ -178,11 +207,11 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
         capRatePct: Math.round(s.capRate * 1000) / 10,
         localCapRatePct: Math.round(deal.localMedianCapRate * 1000) / 10,
         relAdvantagePct: Math.round(deal.relAdvantage * 100),
-        dealScore: Math.round(deal.dealScore * 100) / 100,
+        dealScore: Math.round(effScore * 100) / 100,
         cluster: deal.cluster,
         belowMarket: deal.belowMarket,
-        color: interpolatePalette(deal.dealScore, gradient),
-        heatWeight: Math.max(0.08, deal.dealScore),
+        color: interpolatePalette(effScore, gradient),
+        heatWeight: Math.max(0.08, effScore),
         band: classifyBand(s.cashFlow, q.target),
         confidence: s.r.confidence_level,
         confidenceScore: s.r.confidence_score,
@@ -203,6 +232,7 @@ export async function queryPins(q: PinsQuery): Promise<PinCollection> {
     type: "FeatureCollection",
     features: features.slice(0, q.limit ?? 2000),
     scanned: rows.length,
+    eligible: scored.length,
     scannedCapped: rows.length === SCAN_CAP,
   };
 }

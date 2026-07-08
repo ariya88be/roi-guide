@@ -149,12 +149,36 @@ export const AssumptionsSchema = z
     },
   }));
 
-/** Parse just the assumption sliders; always succeeds (all fields default). */
-export function parseAssumptions(sp: URLSearchParams) {
+const ASSUMPTION_KEYS = [
+  "allCash",
+  "downPaymentPct",
+  "annualRatePct",
+  "termMonths",
+  "vacancyPct",
+  "managementPct",
+  "maintenancePct",
+] as const;
+
+function rawAssumptions(sp: URLSearchParams): Record<string, string> {
   const raw: Record<string, string> = {};
-  for (const k of ["allCash", "downPaymentPct", "annualRatePct", "termMonths", "vacancyPct", "managementPct", "maintenancePct"] as const) {
+  for (const k of ASSUMPTION_KEYS) {
     const val = sp.get(k);
     if (val != null) raw[k] = val;
   }
-  return AssumptionsSchema.parse(raw);
+  return raw;
+}
+
+/**
+ * Parse the assumption sliders, THROWING on an out-of-range value. Missing
+ * fields default; a PRESENT-but-invalid one (e.g. downPaymentPct=9) still
+ * throws — so route handlers should prefer {@link safeParseAssumptions} to
+ * return a 400 rather than surfacing a 500.
+ */
+export function parseAssumptions(sp: URLSearchParams) {
+  return AssumptionsSchema.parse(rawAssumptions(sp));
+}
+
+/** Same, but returns {success, data|error} so a bad value is a 400, not a 500. */
+export function safeParseAssumptions(sp: URLSearchParams) {
+  return AssumptionsSchema.safeParse(rawAssumptions(sp));
 }
