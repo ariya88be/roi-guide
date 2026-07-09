@@ -209,6 +209,15 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** A small translucent ring dropped at a coordinate with no zoom/pan — used
+ * for both the grey "hovering this list row" and red "clicked this list row"
+ * indicators, which share everything but their colour. */
+function makeCircleMarker(map: maplibregl.Map, coords: [number, number], color: string): maplibregl.Marker {
+  const el = document.createElement("div");
+  el.style.cssText = `width:26px;height:26px;border-radius:9999px;background:${color}33;border:2px solid ${color};pointer-events:none;box-sizing:border-box;`;
+  return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat(coords).addTo(map);
+}
+
 /**
  * Hover "sneak peek" content. We cannot embed Zillow's actual page (it blocks
  * iframing and we don't scrape it) — this is our OWN data, styled like a quick
@@ -326,6 +335,11 @@ export default function MapView() {
   // back into the fetched viewport (where its normal numbered pin already
   // marks the spot, so the separate star marker steps aside).
   const starMarkersRef = useRef<Record<string, maplibregl.Marker>>({});
+  // A grey "hovering this row" ring and a red "clicked this row" ring —
+  // list-row interactions mark the spot on the map instead of flying there,
+  // so you keep your bearings on wherever you were already looking.
+  const hoverCircleMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const selectedCircleMarkerRef = useRef<maplibregl.Marker | null>(null);
   // Heatmap gating: the glow only shows when the user has it on AND there are
   // enough homes in frame (>=4) for a density map to mean anything. showHeatRef
   // mirrors the checkbox; heatEligibleRef is recomputed on every idle from the
@@ -378,6 +392,11 @@ export default function MapView() {
   // pan away and it drops out of `pinList`. Real state (not a ref) so it can
   // be read safely during render (combinedList below).
   const [starredFeatures, setStarredFeatures] = useState<Record<string, PinFeature>>({});
+  // List-row hover/click map indicators — a grey ring follows whatever row
+  // you're hovering; clicking a row drops a red ring at its spot instead of
+  // flying the map there, so a click never disrupts wherever you're looking.
+  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(null);
   // Lazy initializer: reads the OS preference once, only on the client.
   const [darkMode, setDarkMode] = useState<boolean>(prefersDark);
 
@@ -483,6 +502,19 @@ export default function MapView() {
     return out.sort((a, b) => b.properties.dealScore - a.properties.dealScore);
   }, [pinList, starredIds, starredFeatures]);
 
+  // Coordinate lookup for the hover/selected map-ring indicators — covers
+  // every property visible ANYWHERE in the list (in-frame or starred
+  // elsewhere), since either kind of row can be hovered/clicked.
+  const featuresById = useMemo(() => {
+    const map = new Map<string, PinFeature>();
+    for (const f of pinList) map.set(f.properties.id, f);
+    for (const id of starredIds) {
+      const f = starredFeatures[id];
+      if (f) map.set(id, f);
+    }
+    return map;
+  }, [pinList, starredIds, starredFeatures]);
+
   const fetchPins = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
@@ -569,11 +601,13 @@ export default function MapView() {
     [openDetail],
   );
 
-  /** List-row click: also fly the map to the property, since from a list you
-   * don't yet know where on the map it is. */
-  const selectAndFlyTo = useCallback(
+  /** List-row click: deliberately does NOT move the map (a click never
+   * disrupts wherever you're currently looking) — instead drops a red ring
+   * over the property's spot (see the marker-sync effect below), which is
+   * visible if it's already on screen and picks up once you pan there. */
+  const selectFromList = useCallback(
     (f: PinFeature) => {
-      mapRef.current?.flyTo({ center: f.geometry.coordinates, zoom: Math.max(mapRef.current.getZoom(), 14) });
+      setSelectedCircleId(f.properties.id);
       selectProperty(f.properties);
     },
     [selectProperty],
@@ -1057,6 +1091,37 @@ export default function MapView() {
     };
   }, []);
 
+  // Grey ring over whatever property row is currently hovered.
+  useEffect(() => {
+    const map = mapRef.current;
+    hoverCircleMarkerRef.current?.remove();
+    hoverCircleMarkerRef.current = null;
+    if (!map || !hoveredRowId) return;
+    const f = featuresById.get(hoveredRowId);
+    if (!f) return;
+    hoverCircleMarkerRef.current = makeCircleMarker(map, f.geometry.coordinates, "#9ca3af");
+  }, [hoveredRowId, featuresById]);
+
+  // Red ring over the last-clicked property row — replaces the old
+  // fly-to-it behaviour entirely; the map never moves on a list click.
+  useEffect(() => {
+    const map = mapRef.current;
+    selectedCircleMarkerRef.current?.remove();
+    selectedCircleMarkerRef.current = null;
+    if (!map || !selectedCircleId) return;
+    const f = featuresById.get(selectedCircleId);
+    if (!f) return;
+    selectedCircleMarkerRef.current = makeCircleMarker(map, f.geometry.coordinates, "#dc2626");
+  }, [selectedCircleId, featuresById]);
+
+  // Unmount-only cleanup for the hover/selected ring markers.
+  useEffect(() => {
+    return () => {
+      hoverCircleMarkerRef.current?.remove();
+      selectedCircleMarkerRef.current?.remove();
+    };
+  }, []);
+
   // Refetch when filters change — debounced so typing/sliding doesn't spam the API.
   useEffect(() => {
     if (!mapRef.current?.isStyleLoaded()) return;
@@ -1470,7 +1535,12 @@ export default function MapView() {
             ) : (
               <ul className="divide-y divide-gray-100 dark:divide-gray-800">
                 {listRows.map(({ feature: f, hidden, displayRank }) => (
-                  <li key={f.properties.id} className="flex items-center">
+                  <li
+                    key={f.properties.id}
+                    className="flex items-center"
+                    onMouseEnter={() => setHoveredRowId(f.properties.id)}
+                    onMouseLeave={() => setHoveredRowId((id) => (id === f.properties.id ? null : id))}
+                  >
                     {hidden ? (
                       <span className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 opacity-50">
                         <span
@@ -1487,7 +1557,7 @@ export default function MapView() {
                     ) : (
                       <button
                         type="button"
-                        onClick={() => selectAndFlyTo(f)}
+                        onClick={() => selectFromList(f)}
                         aria-label={`Rank ${displayRank}: ${f.properties.address}, ${money(
                           filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow,
                         )} per month ${filters.basis === "revenue" ? "rent" : "cash flow"}, priced ${money(f.properties.price)}`}
@@ -1564,13 +1634,18 @@ export default function MapView() {
                 </p>
                 <ul className="divide-y divide-gray-100 dark:divide-gray-800">
                   {starredElsewhere.map((f) => (
-                    <li key={f.properties.id} className="flex items-center">
+                    <li
+                      key={f.properties.id}
+                      className="flex items-center"
+                      onMouseEnter={() => setHoveredRowId(f.properties.id)}
+                      onMouseLeave={() => setHoveredRowId((id) => (id === f.properties.id ? null : id))}
+                    >
                       <button
                         type="button"
-                        onClick={() => selectAndFlyTo(f)}
+                        onClick={() => selectFromList(f)}
                         aria-label={`Starred, not in current view: ${f.properties.address}, ${money(
                           filters.basis === "revenue" ? f.properties.medianRent : f.properties.cashFlow,
-                        )} per month ${filters.basis === "revenue" ? "rent" : "cash flow"}, priced ${money(f.properties.price)}. Click to fly there.`}
+                        )} per month ${filters.basis === "revenue" ? "rent" : "cash flow"}, priced ${money(f.properties.price)}.`}
                         className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800"
                       >
                         <span

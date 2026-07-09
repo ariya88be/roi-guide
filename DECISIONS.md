@@ -852,3 +852,30 @@ OS-dark-scheme browser, forcing in-app Day mode, and reading each input's
 resolved RGB, not just trusting the CSS source) — all three price/target
 inputs render `rgb(16,24,40)` (dark, readable) in day mode and
 `rgb(243,244,246)` (light, readable) in night mode.
+
+---
+
+## 2026-07-09 — Properties list: hover/click ring indicators instead of fly-to
+
+Owner: clicking a home in the Properties list should no longer zoom the map
+to it; instead a red circle should mark its spot, and hovering a row should
+show a small grey circle at its location (turning red on click) — no zoom or
+pan either way.
+
+Replaced `selectAndFlyTo` (which called `map.flyTo`) with `selectFromList`,
+which drops a red ring marker at the property's coordinate instead — it
+still opens the Zillow listing and the detail card exactly as before, only
+the map movement is gone. Hovering any list row (in-view or "starred
+elsewhere") shows a separate grey ring at that row's spot via
+`onMouseEnter`/`onMouseLeave`; both rings are plain `maplibregl.Marker`
+instances (`makeCircleMarker`, shared by colour) so they work for
+off-screen properties too — the ring just isn't visible until you pan
+there yourself. A shared `featuresById` lookup (merging `pinList` and the
+starred-properties cache) resolves coordinates for either list section.
+
+**Tests:** typecheck + lint clean; 190 pass. Live-verified: hovering a row
+adds a grey ring (confirmed via the marker's own computed style, not just a
+screenshot) with the map's center/zoom provably unchanged; clicking removes
+the grey and adds a red ring at the same coordinate, which persists after
+the mouse leaves the row; the detail card and Zillow tab still open exactly
+as before.
