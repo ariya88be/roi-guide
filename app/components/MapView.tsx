@@ -358,6 +358,12 @@ export default function MapView() {
   // alternative" a map needs for screen readers.
   const [pinList, setPinList] = useState<PinFeature[]>([]);
   const [listExpanded, setListExpanded] = useState(false);
+  // Mobile-only: the whole left panel starts collapsed to just its title bar
+  // (tapping it expands/collapses) so opening on a phone doesn't immediately
+  // bury the map under a full-height control panel. Irrelevant on desktop —
+  // the panel body's `md:block` override always shows it there regardless of
+  // this value, so defaulting to collapsed costs desktop nothing.
+  const [panelExpanded, setPanelExpanded] = useState(false);
   // Properties the user chose to hide (an "eye" toggle in the list) — removed
   // from the map/ranking entirely, not just visually dimmed, and persists
   // across pans/zooms/refetches within the session.
@@ -1141,20 +1147,46 @@ export default function MapView() {
         </a>
       </div>
 
-      {/* Controls */}
-      <div className="absolute left-4 top-4 z-10 w-72 rounded-xl bg-white/75 p-4 shadow-lg backdrop-blur dark:bg-gray-900/70 dark:shadow-black/40">
-        <div className="flex items-start justify-between gap-2">
+      {/* Controls — full-width-ish near the top edge on mobile (collapsible),
+          a fixed-width floating card on desktop (always fully shown). */}
+      <div className="absolute left-2 right-2 top-2 z-10 max-h-[calc(100vh-1rem)] overflow-y-auto rounded-xl bg-white/75 p-4 shadow-lg backdrop-blur dark:bg-gray-900/70 dark:shadow-black/40 md:left-4 md:right-auto md:top-4 md:w-72">
+        {/* Tapping anywhere here (except the day/night button) toggles the
+            panel body on mobile; a plain div (not <button>) since it hosts a
+            nested interactive control, which native <button> can't do. */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setPanelExpanded((v) => !v)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setPanelExpanded((v) => !v);
+            }
+          }}
+          aria-expanded={panelExpanded}
+          aria-controls="roi-panel-body"
+          className="flex items-start justify-between gap-2 md:cursor-default"
+        >
           <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">LA ROI Guide</h1>
-          <button
-            type="button"
-            onClick={() => setDarkMode((d) => !d)}
-            aria-label={darkMode ? "Switch to day mode" : "Switch to night mode"}
-            title={darkMode ? "Day mode" : "Night mode"}
-            className="rounded-full p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-          >
-            {darkMode ? "☀️" : "🌙"}
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDarkMode((d) => !d);
+              }}
+              aria-label={darkMode ? "Switch to day mode" : "Switch to night mode"}
+              title={darkMode ? "Day mode" : "Night mode"}
+              className="rounded-full p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {darkMode ? "☀️" : "🌙"}
+            </button>
+            <span className="text-[10px] text-gray-400 dark:text-gray-500 md:hidden" aria-hidden="true">
+              {panelExpanded ? "▾" : "▸"}
+            </span>
+          </div>
         </div>
+        <div id="roi-panel-body" className={panelExpanded ? "block" : "hidden md:block"}>
         <p className="mt-0.5 text-[11px] leading-tight text-gray-500 dark:text-gray-400">
           Set the monthly number you want. Pins are active listings that clear it, colored by how far.
           Coverage: Greater Los Angeles (the coast, the city, the San Fernando Valley, out to the Inland Empire).
@@ -1573,6 +1605,7 @@ export default function MapView() {
             )}
           </div>
         )}
+        </div>
       </div>
 
       {/* Detail card */}

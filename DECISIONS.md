@@ -791,3 +791,31 @@ this round is UI/state logic without new pure-function surface). Everything
 above live-verified in the browser, including the specific repro that caught
 the rank-parity bug (star a property, pan until only a different property is
 on screen, compare its map-pin rank number against its list badge).
+
+---
+
+## 2026-07-08 (evening) — Mobile-responsive control panel
+
+Owner: "when you open on your phone all you see is 'LA ROI Guide'. when you
+click it, it expands... when you click it again it shrinks."
+
+Below Tailwind's `md:` breakpoint (768px) the left panel now defaults to
+collapsed — just the title bar (+ day/night toggle + a chevron), spanning
+near-full width with small side margins so it reads as a mobile header, not a
+floating desktop card. Tapping the bar (anywhere except the day/night button,
+which stops propagation) toggles a `panelExpanded` state; the panel body is a
+single wrapping `<div>` around everything below the header, switched via
+`hidden` / `block` by that state. At `md:` and up the body carries a
+`md:block` override that ALWAYS shows it regardless of `panelExpanded` — so
+desktop behaviour is completely unchanged (verified at a genuine 1440px
+width; the tool's own "desktop" preset turned out to resolve to 706px in
+this environment, usefully catching that the naive test would have hidden a
+real bug). Expanded-on-mobile is height-capped
+(`max-h-[calc(100vh-1rem)] overflow-y-auto`) so it never exceeds the
+viewport on a short phone screen.
+
+**Tests:** typecheck + lint clean; 190 pass offline+DB. Live-verified at
+375×812 (mobile: collapsed by default, expands/collapses on tap, confirmed
+via the accessibility tree that a collapsed panel is truly removed — `hidden`,
+not just visually dimmed) and 1440×900 (desktop: always fully expanded,
+identical to pre-change behaviour).
