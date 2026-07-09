@@ -1252,7 +1252,7 @@ export default function MapView() {
             min={1}
             step={50}
             onChange={(e) => setFilters((f) => ({ ...f, target: Math.max(1, Number(e.target.value) || 1) }))}
-            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           />
           <p className="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">
             {filters.basis === "revenue"
@@ -1275,7 +1275,7 @@ export default function MapView() {
                 const v = Number(e.target.value);
                 setFilters((f) => ({ ...f, budgetMin: e.target.value === "" || !(v > 0) ? null : v }));
               }}
-              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
             />
             <span className="text-xs text-gray-400 dark:text-gray-500">to</span>
             <input
@@ -1289,7 +1289,7 @@ export default function MapView() {
                 const v = Number(e.target.value);
                 setFilters((f) => ({ ...f, budgetMax: e.target.value === "" || !(v > 0) ? null : v }));
               }}
-              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+              className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
         </fieldset>
@@ -1375,7 +1375,7 @@ export default function MapView() {
                 value={filters.termMonths}
                 disabled={filters.allCash}
                 onChange={(e) => setFilters((f) => ({ ...f, termMonths: Number(e.target.value) }))}
-                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value={180}>15 years</option>
                 <option value={360}>30 years</option>

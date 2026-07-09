@@ -819,3 +819,36 @@ viewport on a short phone screen.
 via the accessibility tree that a collapsed panel is truly removed — `hidden`,
 not just visually dimmed) and 1440×900 (desktop: always fully expanded,
 identical to pre-change behaviour).
+
+---
+
+## 2026-07-08 (night) — Fix: number inputs unreadable in light mode on a dark-OS device
+
+Owner: entered numbers were very light/hard to read in the app's own "day"
+mode, but fine in "night" mode.
+
+Root cause: `app/globals.css` had a leftover `@media (prefers-color-scheme:
+dark)` block (default Next.js scaffold boilerplate) that overrode
+`--foreground` to a near-white colour whenever the user's OS itself is in
+dark mode — completely independent of the app's own explicit `.dark`-class
+Night-mode toggle (`@custom-variant dark (&:where(.dark, .dark *))`, per the
+comment directly above it). On a device with the OS set to dark, picking
+"Day mode" in-app made the panel/inputs go light-background as expected, but
+`body`'s base text colour stayed near-white (driven by the OS, not the
+in-app toggle) — light text on a light background. Removed the media query
+block entirely; `--foreground` is now always the single light-mode value,
+exclusively overridden by the app's own `.dark` class where used.
+
+Also added an explicit `text-gray-900` (paired with the existing
+`dark:text-gray-100`) to all four themed inputs (target, budget min/max, and
+one other) that were relying on inherited body colour rather than an
+explicit light-mode class — defense in depth, matching the pattern already
+used everywhere else in this file (never rely on inherited/ambient colour
+for themed text).
+
+**Tests:** typecheck + lint clean; 190 pass. Live-verified by emulating an
+OS-dark-scheme browser, forcing in-app Day mode, and reading each input's
+*computed* text colour (decoded via an offscreen canvas to confirm the true
+resolved RGB, not just trusting the CSS source) — all three price/target
+inputs render `rgb(16,24,40)` (dark, readable) in day mode and
+`rgb(243,244,246)` (light, readable) in night mode.
