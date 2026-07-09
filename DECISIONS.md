@@ -879,3 +879,48 @@ screenshot) with the map's center/zoom provably unchanged; clicking removes
 the grey and adds a red ring at the same coordinate, which persists after
 the mouse leaves the row; the detail card and Zillow tab still open exactly
 as before.
+
+---
+
+## 2026-07-09 (later) — Click empty map space to clear the selected ring
+
+Owner: once a red ring is showing, clicking anywhere else on the map (not a
+pin, cluster, or list row) should clear it.
+
+Added a general (non-layer-scoped) `map.on("click", ...)` handler alongside
+the existing per-layer click handlers. It runs `queryRenderedFeatures` at
+the click point against the same interactive layers (`pins-symbol`,
+`pins-label`, `pins-label-roi`, `clusters-circle`); only when that query
+comes back empty — i.e. the click missed every interactive feature — does
+it call `setSelectedCircleId(null)`. Registered inside the same
+`map.on("load", ...)` block as the per-layer handlers, right after the
+`INTERACTIVE_LAYERS` loop.
+
+**Tests:** typecheck + lint clean; 190 pass (offline + DB-backed). Live-
+verified at 1440×900: selecting a list row drops a red ring (confirmed via
+the marker's computed `cssText`, colour `rgb(220, 38, 38)`); clicking a
+point on the canvas with no markers nearby removes it (ring count 1 → 0);
+clicking a different list row afterward still sets a new red ring
+correctly, confirming the empty-space handler doesn't fire on marker
+clicks and undo a fresh selection.
+
+---
+
+## 2026-07-09 (later still) — Removed 2 more off-market listings (stale "Active" status)
+
+Owner-reported off-market on Zillow while still showing "Active" in our
+data:
+- 5747 3rd Ave, Los Angeles, CA 90043
+  (`c7b700aa-e12f-422f-abd1-61605fb18d20`)
+- 10730 New Haven St, Sun Valley, CA 91352
+  (`b7ecad7e-fb41-400e-bf18-2cc7bda78432`)
+
+Confirmed both match by address in `properties`/`listings` and were stored
+with `status = 'Active'`, `is_active = true` — stale relative to their
+actual current Zillow status. Deactivated via direct `UPDATE listings SET
+is_active = false, removed_date = current_date, ...`, `RETURNING`-verified.
+
+This is the second one-off manual removal for the same root cause (RentCast
+status lagging real-world off-market changes); a systemic freshness check
+(re-verifying `status` on a rolling basis, not just at first ingest) is
+still an open gap, not yet built.

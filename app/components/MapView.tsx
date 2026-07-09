@@ -1026,6 +1026,16 @@ export default function MapView() {
         });
       }
 
+      // Clicking empty map space clears the selected (red) ring. Only fires
+      // when the click missed every interactive layer, so clicking a pin or
+      // cluster never gets undone by this handler.
+      map.on("click", (e) => {
+        const hits = map.queryRenderedFeatures(e.point, {
+          layers: [...INTERACTIVE_LAYERS, "clusters-circle"],
+        });
+        if (hits.length === 0) setSelectedCircleId(null);
+      });
+
       fetchPins();
     });
 
