@@ -924,3 +924,65 @@ This is the second one-off manual removal for the same root cause (RentCast
 status lagging real-world off-market changes); a systemic freshness check
 (re-verifying `status` on a rolling basis, not just at first ingest) is
 still an open gap, not yet built.
+
+---
+
+## 2026-07-11 — New markets: Russian River (95446) + Pacoima (91331); budget default → $180k–$600k
+
+Owner: "get me russian river [95446] in norcal and pacoima 91331. focus on
+homes that go up to 600k (nothing less than 180k). do not include mobile
+homes or plot of land or anything that isnt ready to move into."
+
+**Scope note:** 95446 (Guerneville, Sonoma County) is the first ZIP outside
+the documented "Greater Los Angeles metro" launch geography (CLAUDE.md) —
+a deliberate expansion per this explicit request, not a silent scope creep.
+
+**Ingested both ZIPs** via the existing gated `live-run.test.ts` harness
+(`RUN_LIVE_INGEST=1 INGEST_ZIP=<zip> INGEST_LIMIT=200`), parameterizing its
+previously-hardcoded `limit: 25` into an `INGEST_LIMIT` env var (defaults to
+25, unchanged for existing callers). `ingestZip` costs exactly 2 provider
+calls per ZIP (one market, one listings page) — cheap regardless of area
+size. Results: 91331 — 60 fetched, 5 screened out, 55 ingested. 95446 — 42
+ingested (fetched/screened counts not captured on this run; a duplicate
+re-run of the same ZIP is harmless, idempotent upsert).
+
+**Mobile homes / land / not-move-in-ready — already enforced, no code
+change needed.** `ALLOWED_PROPERTY_TYPE_TOKENS` (lib/hygiene/tokens.ts) is
+an allowlist (single-family, condo, townhouse, 2–4-unit multifamily) that
+never included manufactured/mobile home tokens, so they're excluded at
+ingest for every ZIP, not just these two. `LAND_PROPERTY_TYPE_TOKENS` and
+the distressed/non-active-status exclusions (foreclosure, pre-foreclosure,
+auction, REO, short-sale, new-construction, pending, contingent,
+under-contract, off-market, coming-soon, etc.) already cover "not ready to
+move into." Verified live: post-ingest property-type breakdown for both
+ZIPs is 100% Single Family / Condo / Multi-Family / Townhouse — zero
+manufactured, zero land.
+
+**Budget default raised to $180k–$600k** (`INITIAL_FILTERS` in
+MapView.tsx, was $45k–$500k) — this is a global default, not scoped to the
+two new ZIPs (the budget filter has no per-market concept), which also
+matches the plain reading of "focus on homes that go up to 600k (nothing
+less than 180k)" as a general instruction. Still owner-adjustable via the
+existing Budget slider.
+
+**Data-quality flag surfaced, not fixed (product's confidence system
+already handles it correctly):** 95446's rent-comp sample is thin (18
+active rental listings at ingest vs. 91331's 56) and Guerneville/Russian
+River is a vacation/short-term-rental-heavy economy — the same category of
+risk that got the SoCal mountain resort towns (Big Bear, Lake Arrowhead,
+etc.) added to `DEFAULT_EXCLUDED_MARKETS` for `ingestRadius`. `ingestZip`
+has no such exclusion list (it's a direct single-ZIP request, not a radius
+sweep), and confidence in fact came back 100% "Low" for all 42 Russian
+River listings via the existing sample-size-aware confidence engine — the
+product is already being honest about this market being thinner data,
+exactly as designed. Not silently hidden; not treated as equivalent-quality
+to Pacoima's data either.
+
+**Tests:** typecheck + lint clean; 190 pass (offline + DB-backed) —
+unaffected, no pure-logic changes. Verified against the live local
+`/api/pins` endpoint (same route the map calls) with the new $180k–$600k
+default: Pacoima bbox returns 50 features (141 scanned, 50 eligible)
+including "12287 Osborne St, Pacoima, CA 91331"; Russian River bbox returns
+22 features (42 scanned, 23 eligible) including "16352 5th St, Guerneville,
+CA 95446" and "17850 Santa Rosa Ave, Guerneville, CA 95446". Control panel
+confirmed showing 180000/600000 as the loaded default.

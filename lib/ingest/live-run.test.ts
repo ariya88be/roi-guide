@@ -19,6 +19,7 @@ const live = enabled ? describe : describe.skip;
 // Default to a San Bernardino (Inland Empire) ZIP — cheaper homes with higher
 // rent-to-price ratios, so the map actually shows positive cash-flow pins.
 const INGEST_ZIP = process.env.INGEST_ZIP ?? "92404";
+const INGEST_LIMIT = process.env.INGEST_LIMIT ? Number(process.env.INGEST_LIMIT) : 25;
 
 live("LIVE ingest (real RentCast + DB)", () => {
   it(
@@ -34,7 +35,7 @@ live("LIVE ingest (real RentCast + DB)", () => {
           zipCode: INGEST_ZIP,
           now: new Date(),
           snapshotDate: new Date().toISOString().slice(0, 10),
-          limit: 25,
+          limit: INGEST_LIMIT,
         });
         console.log("LIVE INGEST SUMMARY:", JSON.stringify(summary));
         expect(summary.fetched).toBeGreaterThanOrEqual(0);

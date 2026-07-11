@@ -262,8 +262,8 @@ function buildPreviewHtml(p: Record<string, unknown>, dark: boolean, basis: "pro
 // the financing toggle reveals the (honest) financed picture.
 const INITIAL_FILTERS: Filters = {
   target: 1400,
-  budgetMin: 45_000,
-  budgetMax: 500_000,
+  budgetMin: 180_000,
+  budgetMax: 600_000,
   basis: "profit",
   allCash: true,
   palette: "rdylgn",
@@ -1264,7 +1264,8 @@ export default function MapView() {
         <div id="roi-panel-body" className={panelExpanded ? "block" : "hidden md:block"}>
         <p className="mt-0.5 text-[11px] leading-tight text-gray-500 dark:text-gray-400">
           Set the monthly number you want. Pins are active listings that clear it, colored by how far.
-          Coverage: Greater Los Angeles (the coast, the city, the San Fernando Valley, out to the Inland Empire).
+          Coverage: Greater Los Angeles (the coast, the city, the San Fernando Valley, out to the Inland Empire),
+          plus the Russian River area (Guerneville, NorCal).
         </p>
         <p className="mt-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           {loading
