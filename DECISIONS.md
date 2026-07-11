@@ -986,3 +986,58 @@ including "12287 Osborne St, Pacoima, CA 91331"; Russian River bbox returns
 22 features (42 scanned, 23 eligible) including "16352 5th St, Guerneville,
 CA 95446" and "17850 Santa Rosa Ave, Guerneville, CA 95446". Control panel
 confirmed showing 180000/600000 as the loaded default.
+
+---
+
+## 2026-07-11 (later) — Live rent verification of top candidates; the ZIP-median basis fails at the top of the ranking
+
+Owner set a hard bar (houses ≤$500k with ≥$1,700/mo profit; multifamily
+≤$600k with ≥$4,000/mo) and challenged our rent figures as higher than
+RentCast's own estimates and Zillow's — correctly, it turned out.
+
+**Method:** new gated harness `lib/ingest/rent-verify.live.test.ts`
+(`RUN_RENT_VERIFY=1`, spends 1 provider call per property) pulls RentCast's
+property-level rent AVM + its 15 comps for each shortlisted address and
+recomputes the all-cash cash flow with a conservative verified basis =
+min(AVM point estimate, median of comps). The `CANDIDATES` list is edited
+per investigation — the harness is the durable part.
+
+**Every single candidate that "cleared the bar" on stored numbers failed
+verification, each for a different reason:**
+1. **1333 S Beverly Glen Blvd ×3 ($50k–$75k "condos")** — Zillow listing
+   text reveals they are Glen Towers "maid's quarters" units purchasable
+   ONLY by existing owners in the building. Not an outside-investor
+   opportunity at all. → Deactivated all 3.
+2. **3604 W Estates Ln #114, Rolling Hills Estates** — stored rent $6,000
+   (ZIP-overall median, 0BR fallback) vs verified $1,850 (15 comps): cash
+   flow $1,774 → $507. This is the exact 440-sqft-studio case documented
+   2026-07-08 as the motivation for the implausible-rent/size gate, but the
+   row had `de_emphasize=false` — it escaped/regressed since the backfill.
+   → Re-flagged Low/20/de-emphasised directly.
+3. **28947 E Thousand Oaks Blvd, Agoura Hills** — stored $5,200 vs verified
+   $2,395: cash flow $1,466 → $875. Below the bar.
+4. **501 (N) Palisades Dr, Pacific Palisades (5 active units)** — verified
+   rent held up ($3,860 AVM), BUT the Zillow listing reveals the complex is
+   "exclusively designated for seniors/62+" — an explicit locked exclusion
+   (brief: 55+ senior-restricted) that RentCast's structured feed cannot
+   express (`toScreenableListing` hardcodes `seniorRestricted: false`,
+   documented as a Phase-2 gap). → Deactivated all 5 units.
+
+**Bottom line reported to the owner:** with verified rents, ZERO of 4,062
+active listings meet the bar. The nominal winners were all data artifacts
+or restricted-purchase/senior units.
+
+**Systemic lessons (open gaps, not yet built):**
+- The ZIP bedroom-median rent basis systematically overstates rent for
+  small/cheap units in expensive ZIPs — and those are EXACTLY the listings
+  that float to the top of a cash-flow ranking. Adverse selection: the
+  ranking's top is enriched with basis errors. Phase-2 property-level AVM
+  (1 call/property, budget-gated to the top N of the ranking) is the fix.
+- Restricted-purchase and senior-restricted units are invisible in
+  RentCast structured fields; only listing remarks reveal them. A
+  remarks-based screen (or ATTOM cross-check) is the durable fix; until
+  then, manual Zillow verification of anything that looks too good.
+- Suspiciously-cheap-for-the-area condo clusters (Encino 5460 White Oak,
+  Calabasas Park Granada, Winnetka 20234 Cantara, 16601 Marquez) share the
+  same smell and have NOT been verified yet — treat their stored numbers
+  as unreliable until checked.
