@@ -18,14 +18,69 @@ const live = enabled ? describe : describe.skip;
 /** The current shortlist (stored ZIP-median numbers said these clear the owner's bar). */
 const CANDIDATES = [
   {
-    address: "28947 E Thousand Oaks Blvd, Agoura Hills, CA 91301",
-    propertyType: "Condo", bedrooms: 1, bathrooms: 1, squareFootage: 501,
-    price: 299999, hoa: 593, storedRent: 5200, storedCashFlow: 1466.28,
+    address: "7790 Sierra Ave, Fontana, CA 92336",
+    propertyType: "Single Family", bedrooms: 2, bathrooms: 1, squareFootage: 877,
+    price: 484999, hoa: null, storedRent: 3500, storedCashFlow: -498.03,
   },
   {
-    address: "501 N Palisades Dr, Unit 103, Pacific Palisades, CA 90272",
-    propertyType: "Condo", bedrooms: 1, bathrooms: 1, squareFootage: 593,
-    price: 289804, hoa: 554, storedRent: 4975, storedCashFlow: 1397.64,
+    address: "16268 Barbee St, Fontana, CA 92336",
+    propertyType: "Single Family", bedrooms: 2, bathrooms: 1, squareFootage: 848,
+    price: 499000, hoa: null, storedRent: 3500, storedCashFlow: -591.22,
+  },
+  {
+    address: "1425 Allium Ct, Beaumont, CA 92223",
+    propertyType: "Single Family", bedrooms: 4, bathrooms: 3, squareFootage: 1725,
+    price: 450000, hoa: 151, storedRent: 3500, storedCashFlow: -416.09,
+  },
+  {
+    address: "452 Cherry Vista Dr, Perris, CA 92571",
+    propertyType: "Single Family", bedrooms: 4, bathrooms: 2.5, squareFootage: 1407,
+    price: 499900, hoa: null, storedRent: 3149, storedCashFlow: -870.99,
+  },
+  {
+    address: "12362 Champlain St, Moreno Valley, CA 92557",
+    propertyType: "Single Family", bedrooms: 4, bathrooms: 2.5, squareFootage: 1633,
+    price: 499900, hoa: null, storedRent: 3100, storedCashFlow: -909.21,
+  },
+  {
+    address: "1324 Brentwood Cir, Unit B, Corona, CA 92882",
+    propertyType: "Single Family", bedrooms: 2, bathrooms: 2, squareFootage: 1095,
+    price: 399900, hoa: 554, storedRent: 3589, storedCashFlow: -416.22,
+  },
+  {
+    address: "13894 Meadow Ln, Lytle Creek, CA 92358",
+    propertyType: "Single Family", bedrooms: 3, bathrooms: 2, squareFootage: 1326,
+    price: 484000, hoa: null, storedRent: 3000, storedCashFlow: -881.38,
+  },
+  {
+    address: "1341 Palisades St, Perris, CA 92570",
+    propertyType: "Single Family", bedrooms: 4, bathrooms: 2, squareFootage: 1230,
+    price: 499000, hoa: null, storedRent: 3000, storedCashFlow: -981.22,
+  },
+  {
+    address: "3688 Rossmuir St, Riverside, CA 92504",
+    propertyType: "Single Family", bedrooms: 3, bathrooms: 1.5, squareFootage: 1760,
+    price: 480000, hoa: null, storedRent: 2950, storedCashFlow: -893.76,
+  },
+  {
+    address: "3895 Twining St, Jurupa Valley, CA 92509",
+    propertyType: "Single Family", bedrooms: 3, bathrooms: 1, squareFootage: 810,
+    price: 494999, hoa: null, storedRent: 2950, storedCashFlow: -993.59,
+  },
+  {
+    address: "24412 Broad Ave, Wilmington, CA 90744",
+    propertyType: "Single Family", bedrooms: 2, bathrooms: 1, squareFootage: 835,
+    price: 499000, hoa: null, storedRent: 2900, storedCashFlow: -1059.22,
+  },
+  {
+    address: "1008 W 14th St, San Bernardino, CA 92411",
+    propertyType: "Single Family", bedrooms: 3, bathrooms: 1, squareFootage: 998,
+    price: 395000, hoa: null, storedRent: 2700, storedCashFlow: -523.02,
+  },
+  {
+    address: "12426 2nd St, Yucaipa, CA 92399",
+    propertyType: "Single Family", bedrooms: 3, bathrooms: 2, squareFootage: 1189,
+    price: 485000, hoa: null, storedRent: 2800, storedCashFlow: -1044.04,
   },
 ];
 
