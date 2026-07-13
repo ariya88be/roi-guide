@@ -1041,3 +1041,49 @@ or restricted-purchase/senior units.
   Calabasas Park Granada, Winnetka 20234 Cantara, 16601 Marquez) share the
   same smell and have NOT been verified yet — treat their stored numbers
   as unreliable until checked.
+
+---
+
+## 2026-07-13 — Mobile header brightness; listings open without stealing focus
+
+Owner: mobile's collapsed top bar read too dark in night mode ("brighten
+only by 10%, make sure it doesn't wash off any of the grey text"); and
+clicking a home should open its Zillow tab without switching the browser
+away from the map ("let the user go to the tab if they want to").
+
+**Mobile header brightness.** Added a mobile-only override,
+`max-md:dark:bg-[#292f3d]/70`, alongside the existing `dark:bg-gray-900/70`
+— first attempt used `md:dark:bg-gray-900/70` to restore the desktop
+shade, which silently lost the cascade tie (two same-specificity `dark:`
+variants, order decided by Tailwind's internal generation order, not by
+which one reads as "the override" in the source). `max-md:` sidesteps the
+tie entirely by gating on a real max-width media query, mirroring the
+`md:left-4`/`md:w-72` pattern already used successfully on this same
+element. Also hit this project's known stale-Turbopack-HMR gotcha
+mid-verification (a `rm -rf .next` + restart fixed it, not a code issue).
+
+**Zillow tabs no longer steal focus.** New `openInBackgroundTab()` helper:
+calls `window.open(url, "_blank", "noopener,noreferrer")` then immediately
+`window.focus()` on our own window — the standard workaround for the fact
+that JS has no direct "open a background tab" API (browsers treat that as
+user/browser-preference territory, not something a page can request).
+Wired into `selectProperty` (the shared pin-click/list-row-click handler)
+and both Zillow anchors in the detail card (`onClick` calls
+`e.preventDefault()` then the helper, keeping `href`/`target="_blank"` on
+the `<a>` so middle-click/ctrl-click/right-click "open in new tab" still
+behave natively).
+
+**Tests:** typecheck + lint clean; 190 pass (offline + DB-backed) —
+unaffected, no pure-logic changes. Live-verified: mobile collapsed header
+background confirmed lighter than desktop's via a real side-by-side
+screenshot comparison (an earlier computed-style comparison was misleading
+— Tailwind's opacity modifier resolves named theme colors via
+`color-mix(..., transparent)` but arbitrary hex colors via direct alpha,
+so their raw computed oklab/lab strings aren't comparable apples-to-apples;
+only the rendered pixels are). Grey text (coverage note, fine print,
+legend) stays readable against the brightened mobile background —
+confirmed by expanding the panel and reading it directly. New-tab behavior
+verified by instrumenting `window.open`/`window.focus` in-page and
+clicking a list row on both a 390px and a 1440px viewport — `window.open`
+fires with the correct Zillow URL, `window.focus()` fires immediately
+after, in both cases.

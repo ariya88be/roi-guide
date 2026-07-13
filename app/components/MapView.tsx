@@ -199,6 +199,17 @@ function zillowUrl(address: string): string {
   return `https://www.zillow.com/homes/${encodeURIComponent(slug)}_rb/`;
 }
 
+/**
+ * Open a listing in a new tab without taking focus away from the map — most
+ * browsers foreground a window.open() tab by default, so we immediately
+ * re-focus our own window right after. The user can still switch to the new
+ * tab themselves; this just stops it from yanking their attention there.
+ */
+function openInBackgroundTab(url: string): void {
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.focus();
+}
+
 /** Escape untrusted text before injecting into a MapLibre popup's innerHTML. */
 function escapeHtml(s: string): string {
   return s
@@ -588,7 +599,7 @@ export default function MapView() {
    */
   const selectProperty = useCallback(
     (p: PinFeature["properties"]) => {
-      window.open(zillowUrl(p.address), "_blank", "noopener,noreferrer");
+      openInBackgroundTab(zillowUrl(p.address));
       openDetail(p.id, {
         capRatePct: p.capRatePct,
         localCapRatePct: p.localCapRatePct,
@@ -1224,7 +1235,7 @@ export default function MapView() {
 
       {/* Controls — full-width-ish near the top edge on mobile (collapsible),
           a fixed-width floating card on desktop (always fully shown). */}
-      <div className="absolute left-2 right-2 top-2 z-10 max-h-[calc(100vh-1rem)] overflow-y-auto rounded-xl bg-white/75 p-4 shadow-lg backdrop-blur dark:bg-gray-900/70 dark:shadow-black/40 md:left-4 md:right-auto md:top-4 md:w-72">
+      <div className="absolute left-2 right-2 top-2 z-10 max-h-[calc(100vh-1rem)] overflow-y-auto rounded-xl bg-white/75 p-4 shadow-lg backdrop-blur dark:bg-gray-900/70 dark:shadow-black/40 max-md:dark:bg-[#292f3d]/70 md:left-4 md:right-auto md:top-4 md:w-72">
         {/* Tapping anywhere here (except the day/night button) toggles the
             panel body on mobile; a plain div (not <button>) since it hosts a
             nested interactive control, which native <button> can't do. */}
@@ -1877,6 +1888,10 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
         href={zillowUrl(detail.property.address)}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          openInBackgroundTab(zillowUrl(detail.property.address));
+        }}
         className="pr-6 text-base font-semibold text-blue-700 hover:underline dark:text-blue-400"
       >
         {detail.property.address}
@@ -1889,6 +1904,10 @@ function DetailCard({ detail, deal }: { detail: Detail; deal: DealInfo | null })
         href={zillowUrl(detail.property.address)}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          openInBackgroundTab(zillowUrl(detail.property.address));
+        }}
         className="mt-2 inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
       >
         View on Zillow ↗
